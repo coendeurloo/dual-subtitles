@@ -1,4 +1,4 @@
-# service.subtitles.dualsubtitles
+# Dual Subtitles for Kodi - service.subtitles.dualsubtitles
 
 Dual subtitle addon for Kodi, focused on speed and fewer clicks.
 
