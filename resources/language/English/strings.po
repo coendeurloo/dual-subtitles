@@ -14,17 +14,8 @@ msgstr ""
 
 #English
 
-msgctxt "#33001"
-msgid "Manual Search Not Supported"
-
-msgctxt "#33002"
-msgid "Single Subtitle with Kodi Settings..."
-
-msgctxt "#33003"
-msgid "Choose Subtitle File"
-
 msgctxt "#33004"
-msgid "Dual Subtitles with Addon Settings..."
+msgid "Choose Dual Subtitles..."
 
 msgctxt "#33005"
 msgid "Choose First Subtitle File"
@@ -39,13 +30,22 @@ msgctxt "#33008"
 msgid "Addon Settings..."
 
 msgctxt "#33009"
-msgid "(Press Cancel for No second Subtitle)"
+msgid "(Press Cancel for no second subtitle)"
 
-msgctxt "#33010"
-msgid "These Options Only Apply if Subtitle(s) ...with Addon Settings... Is Chosen.\nNot for ...with Kodi Settings..."
+msgctxt "#33012"
+msgid "Preferred Language 1"
 
-msgctxt "#33011"
-msgid "Single Subtitle with Addon Settings..."
+msgctxt "#33013"
+msgid "Preferred Language 2"
+
+msgctxt "#33014"
+msgid "Found a subtitle for %s.\nChoose %s manually?"
+
+msgctxt "#33017"
+msgid "Automatic Subtitle Selection"
+
+msgctxt "#33018"
+msgid "Disabled"
 
 msgctxt "#32507"
 msgid "Bottom-Top"
@@ -57,7 +57,7 @@ msgctxt "#32509"
 msgid "Bottom-Bottom"
 
 msgctxt "#32510"
-msgid "Dual Subtitles Styles"
+msgid "Dual Subtitles"
 
 msgctxt "#32511"
 msgid "Top/Right Subtitle"
@@ -78,7 +78,7 @@ msgctxt "#32516"
 msgid "Black Translucent Background"
 
 msgctxt "#32517"
-msgid "Subtitle Locations"
+msgid "Subtitle Layout"
 
 msgctxt "#32518"
 msgid "Vertical Margin"
