@@ -47,6 +47,123 @@ msgid "Automatic Subtitle Selection"
 msgctxt "#33018"
 msgid "Disabled"
 
+msgctxt "#33019"
+msgid "Matching and Fallback Behavior"
+
+msgctxt "#33020"
+msgid "No Match Behavior"
+
+msgctxt "#33021"
+msgid "Partial Match Behavior"
+
+msgctxt "#33022"
+msgid "Manual pick both subtitles"
+
+msgctxt "#33023"
+msgid "Pick first subtitle only"
+
+msgctxt "#33024"
+msgid "Stop with message"
+
+msgctxt "#33025"
+msgid "Ask confirmation"
+
+msgctxt "#33026"
+msgid "Auto use found subtitle and ask missing"
+
+msgctxt "#33027"
+msgid "Ignore auto match and pick both manually"
+
+msgctxt "#33028"
+msgid "Require second subtitle"
+
+msgctxt "#33029"
+msgid "Match Strictness"
+
+msgctxt "#33030"
+msgid "Strict (exact video name + language code)"
+
+msgctxt "#33031"
+msgid "Relaxed (allow extra tokens before language code)"
+
+msgctxt "#33032"
+msgid "Start Folder Priority"
+
+msgctxt "#33033"
+msgid "Video folder first"
+
+msgctxt "#33034"
+msgid "Last used folder first"
+
+msgctxt "#33035"
+msgid "Auto-match: Found both subtitles (%s and %s)."
+
+msgctxt "#33036"
+msgid "Auto-match: Found only %s, missing %s."
+
+msgctxt "#33037"
+msgid "Auto-match: No preferred subtitles found."
+
+msgctxt "#33038"
+msgid "Auto-match: Multiple candidates found. Switching to manual selection."
+
+msgctxt "#33039"
+msgid "Stopped: no subtitle match found."
+
+msgctxt "#33040"
+msgid "Second subtitle is required."
+
+msgctxt "#33041"
+msgid "Dual subtitles loaded."
+
+msgctxt "#33042"
+msgid "Could not prepare subtitles."
+
+msgctxt "#33043"
+msgid "Could not access selected subtitle file."
+
+msgctxt "#33044"
+msgid "Using manual subtitle selection."
+
+msgctxt "#33045"
+msgid "Single subtitle loaded."
+
+msgctxt "#33046"
+msgid "Auto Match"
+
+msgctxt "#33047"
+msgid "Fallback"
+
+msgctxt "#33048"
+msgid "Layout"
+
+msgctxt "#33049"
+msgid "Timing and Sync"
+
+msgctxt "#33050"
+msgid "Bottom/Left Style"
+
+msgctxt "#33051"
+msgid "Top/Right Style"
+
+msgctxt "#33052"
+msgid "Strict: only Video.nl.srt / Video-nl.srt / Video_nl.srt.\nRelaxed: allows extra tokens like Video.forced.nl.srt."
+
+msgctxt "#33053"
+msgid "Video folder first: starts in current playback folder first.\nLast used first: starts in the previous subtitle folder first."
+
+msgctxt "#33054"
+msgid "What to do when no subtitle matches preferred languages."
+
+msgctxt "#33055"
+msgid "What to do when only one preferred language is found."
+
+msgctxt "#33056"
+msgid "If enabled, loading stops unless both subtitles are selected."
+
+msgctxt "#33057"
+msgid "Set 2 preferred languages for automatic filename matching."
+
 msgctxt "#32507"
 msgid "Bottom-Top"
 

@@ -4,6 +4,7 @@ import xbmc, xbmcvfs
 import xbmcaddon
 import xbmcgui
 import os
+import codecs
 import chardet
 import uuid
 from json import loads, dumps
@@ -36,6 +37,14 @@ if p2:
     __temp__ = __temp__.decode("utf-8")
 
 __msg_box__    = xbmcgui.Dialog()
+LOG_DEBUG = getattr(xbmc, 'LOGDEBUG', 0)
+LOG_WARNING = getattr(xbmc, 'LOGWARNING', 2)
+
+def __log(message, level=LOG_DEBUG):
+    try:
+      xbmc.log('[%s] %s' % (__addon__.getAddonInfo('id'), message), level)
+    except:
+      pass
 
 def __equalText(t1, t2):
     if t1 == str(t2):
@@ -261,20 +270,39 @@ def __charset_detect(filename, bottom):
         raise RuntimeError(__language__(32534))
       else:
         # see https://github.com/Ousret/charset_normalizer
-        results = from_path(filename)
-        result = results.best()
-        encoding = result.encoding
+        try:
+          results = from_path(filename)
+          result = results.best()
+          if result is not None and result.encoding:
+            encoding = result.encoding
+          else:
+            encoding = 'utf-8'
+            __log('charset_normalizer returned no encoding; fallback utf-8', LOG_WARNING)
+        except Exception as ex:
+          encoding = 'utf-8'
+          __log('charset_normalizer detection failed (%s); fallback utf-8' % (ex), LOG_WARNING)
     elif encoding == 'Auto Chardet':
       with open(filename,'rb') as fi:
           rawdata = fi.read()
       # see https://chardet.readthedocs.io/en/latest/supported-encodings.html
-      encoding = chardet.detect(rawdata)['encoding']
-      if encoding.lower() == 'gb2312':  # Decoding may fail using GB2312
-          encoding = 'gbk'
+      detected = chardet.detect(rawdata)
+      encoding = detected.get('encoding')
+      if encoding:
+        if encoding.lower() == 'gb2312':  # Decoding may fail using GB2312
+            encoding = 'gbk'
+      else:
+        encoding = 'utf-8'
+        __log('chardet returned no encoding; fallback utf-8', LOG_WARNING)
     else:
       # see https://docs.python.org/3/library/codecs.html
-      choices = {'Arabic (ISO)': 'iso-8859-6', 'Arabic (Windows)': 'windows-1256', 'Baltic (ISO)': 'iso-8859-13', 'Baltic (Windows)': 'windows-1257', 'Central Europe (ISO)': 'iso-8859-2', 'Central Europe (Windows)': 'windows-1250', 'Chinese Simplified': 'gb2312', 'Chinese Traditional (Big5)': 'cp950', 'Cyrillic (ISO)': 'iso-8859-5', 'Cyrillic (Windows)': 'windows-1251', 'Greek (ISO)': 'iso-8859-7', 'Greek (Windows)': 'windows-1253', 'Hebrew (ISO)': 'iso-8859-8', 'Hebrew (Windows)': 'windows-1255', 'Hong Kong (Big5-HKSCS)': 'big5-hkscs', 'Japanese (Shift-JIS)': 'csshiftjis', 'Korean': 'iso2022_kr', 'Nordic Languages (ISO)': 'iso-8859-10', 'South Europe (ISO)': 'ISO-8859-3', 'Thai (ISO)': 'iso-8859-11', 'Thai (Windows)': 'cp874', 'Turkish (ISO)': 'iso-8859-9', 'Turkish (Windows)': 'windows-1254', 'UTF8': 'utf8', 'UTF16': 'utf16', 'UTF32': 'utf32', 'Vietnamese (Windows)': 'windows-1258', 'Western Europe (ISO)': 'iso-8859-15', 'Western Europe (Windows)': 'windows-1252'}
-      encoding = choices.get(encoding, 'default')
+      choices = {'Arabic (ISO)': 'iso-8859-6', 'Arabic (Windows)': 'windows-1256', 'Baltic (ISO)': 'iso-8859-13', 'Baltic (Windows)': 'windows-1257', 'Central Europe (ISO)': 'iso-8859-2', 'Central Europe (Windows)': 'windows-1250', 'Chinese Simplified': 'gb2312', 'Chinese Simplified (ISO)': 'gb2312', 'Chinese Traditional (Big5)': 'cp950', 'Cyrillic (ISO)': 'iso-8859-5', 'Cyrillic (Windows)': 'windows-1251', 'Greek (ISO)': 'iso-8859-7', 'Greek (Windows)': 'windows-1253', 'Hebrew (ISO)': 'iso-8859-8', 'Hebrew (Windows)': 'windows-1255', 'Hong Kong (Big5-HKSCS)': 'big5-hkscs', 'Japanese (Shift-JIS)': 'csshiftjis', 'Korean': 'iso2022_kr', 'Nordic Languages (ISO)': 'iso-8859-10', 'South Europe (ISO)': 'ISO-8859-3', 'Thai (ISO)': 'iso-8859-11', 'Thai (Windows)': 'cp874', 'Turkish (ISO)': 'iso-8859-9', 'Turkish (Windows)': 'windows-1254', 'UTF8': 'utf8', 'UTF16': 'utf16', 'UTF32': 'utf32', 'Vietnamese (Windows)': 'windows-1258', 'Western Europe (ISO)': 'iso-8859-15', 'Western Europe (Windows)': 'windows-1252'}
+      encoding = choices.get(encoding, 'utf-8')
+
+    try:
+      codecs.lookup(encoding)
+    except Exception:
+      __log('invalid codec "%s"; fallback utf-8' % (encoding), LOG_WARNING)
+      encoding = 'utf-8'
 
     return encoding
 

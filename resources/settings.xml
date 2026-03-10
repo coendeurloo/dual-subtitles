@@ -1,14 +1,31 @@
 <?xml version="1.0" encoding="utf-8" standalone="yes"?>
 <settings>
-    <category label="32510">
-        <setting label="33017" type="lsep"/>
+    <category label="33046">
         <setting default="Disabled" subsetting="true" label="33012" id="preferred_language_1" type="labelenum" values="Disabled|Afrikaans (af)|Albanian (sq)|Arabic (ar)|Armenian (hy)|Azerbaijani (az)|Basque (eu)|Belarusian (be)|Bengali (bn)|Bosnian (bs)|Bulgarian (bg)|Catalan (ca)|Chinese (zh)|Croatian (hr)|Czech (cs)|Danish (da)|Dutch (nl)|English (en)|Estonian (et)|Finnish (fi)|French (fr)|Galician (gl)|Georgian (ka)|German (de)|Greek (el)|Hebrew (he)|Hindi (hi)|Hungarian (hu)|Icelandic (is)|Indonesian (id)|Irish (ga)|Italian (it)|Japanese (ja)|Kazakh (kk)|Korean (ko)|Latvian (lv)|Lithuanian (lt)|Macedonian (mk)|Malay (ms)|Norwegian (no)|Persian (fa)|Polish (pl)|Portuguese (pt)|Romanian (ro)|Russian (ru)|Serbian (sr)|Slovak (sk)|Slovenian (sl)|Spanish (es)|Swedish (sv)|Tamil (ta)|Thai (th)|Turkish (tr)|Ukrainian (uk)|Urdu (ur)|Vietnamese (vi)|Welsh (cy)"/>
         <setting default="Disabled" subsetting="true" label="33013" id="preferred_language_2" type="labelenum" values="Disabled|Afrikaans (af)|Albanian (sq)|Arabic (ar)|Armenian (hy)|Azerbaijani (az)|Basque (eu)|Belarusian (be)|Bengali (bn)|Bosnian (bs)|Bulgarian (bg)|Catalan (ca)|Chinese (zh)|Croatian (hr)|Czech (cs)|Danish (da)|Dutch (nl)|English (en)|Estonian (et)|Finnish (fi)|French (fr)|Galician (gl)|Georgian (ka)|German (de)|Greek (el)|Hebrew (he)|Hindi (hi)|Hungarian (hu)|Icelandic (is)|Indonesian (id)|Irish (ga)|Italian (it)|Japanese (ja)|Kazakh (kk)|Korean (ko)|Latvian (lv)|Lithuanian (lt)|Macedonian (mk)|Malay (ms)|Norwegian (no)|Persian (fa)|Polish (pl)|Portuguese (pt)|Romanian (ro)|Russian (ru)|Serbian (sr)|Slovak (sk)|Slovenian (sl)|Spanish (es)|Swedish (sv)|Tamil (ta)|Thai (th)|Turkish (tr)|Ukrainian (uk)|Urdu (ur)|Vietnamese (vi)|Welsh (cy)"/>
+        <setting label="33057" type="text" enable="false"/>
         <setting type="lsep"/>
+        <setting default="33030" subsetting="true" label="33029" id="match_strictness" type="labelenum" lvalues="33030|33031"/>
+        <setting label="33052" type="text" enable="false"/>
+        <setting default="33033" subsetting="true" label="33032" id="start_folder_priority" type="labelenum" lvalues="33033|33034"/>
+        <setting label="33053" type="text" enable="false"/>
+    </category>
+    <category label="33047">
+        <setting default="33022" subsetting="true" label="33020" id="no_match_behavior" type="labelenum" lvalues="33022|33023|33024"/>
+        <setting label="33054" type="text" enable="false"/>
+        <setting type="lsep"/>
+        <setting default="33025" subsetting="true" label="33021" id="partial_match_behavior" type="labelenum" lvalues="33025|33026|33027"/>
+        <setting label="33055" type="text" enable="false"/>
+        <setting type="lsep"/>
+        <setting label="33028" type="bool" subsetting="true" id="second_subtitle_required" default="false"/>
+        <setting label="33056" type="text" enable="false"/>
+        <setting id="last_used_subtitle_dir" type="text" default="" visible="false"/>
+    </category>
+    <category label="33048">
         <setting default="32507" subsetting="true" label="32517" id="subtitle_locations" type="labelenum" lvalues="32507|32508|32509" />
-        <setting type="lsep"/>
         <setting label="32525" type="bool" subsetting="true" id="dualsub_swap" default="false"/>
-        <setting type="lsep"/>
+    </category>
+    <category label="33049">
         <setting id="minTime" label="32526" type="number" default="0" subsetting="true"/>
         <setting label="32527" type="text" enable="false"/>
         <setting label="32528" type="text" enable="false"/>
@@ -16,7 +33,8 @@
         <setting id="autoShft" label="32520" type="bool" default="true"/>
         <setting id="autoShftAmt" label="32521" type="number" default="500" subsetting="true" enable="eq(-1,true)"/>
         <setting label="32522" type="text" enable="false"/>
-        <setting label="32519" type="lsep"/>
+    </category>
+    <category label="33050">
         <setting default="Arial" subsetting="true" label="32512" id="bottom_font" type="labelenum" values="Arial|Verdana|DejaVu Sans|&lt;Kodi Subtitles Font&gt;"/>
         <setting default="Auto Chardet" subsetting="true" label="32529" id="bottom_characterset" type="select" values="Auto Chardet|Auto Charset_normalizer|Arabic (ISO)|Arabic (Windows)|Baltic (ISO)|Baltic (Windows)|Central Europe (ISO)|Central Europe (Windows)|Chinese Simplified (ISO)|Chinese Traditional (Big5)|Cyrillic (ISO)|Cyrillic (Windows)|Greek (ISO)|Greek (Windows)|Hebrew (ISO)|Hebrew (Windows)|Hong Kong (Big5-HKSCS)|Japanese (Shift-JIS)|Korean|Nordic Languages (ISO)|South Europe (ISO)|Thai (Windows)|Turkish (ISO)|Turkish (Windows)|Vietnamese (Windows)|UTF8|UTF16|UTF32|Western Europe (ISO)|Western Europe (Windows)"/>
         <setting default="17" subsetting="true" label="32513" type="slider" id="bottom_fontsize" range="12,1,30" option="int" />
@@ -26,7 +44,8 @@
         <setting default="0" subsetting="true" label="32523" type="slider" id="bottom_shadow" range="0,1,3" option="int" />
         <setting default="1" subsetting="true" label="32524" type="slider" id="bottom_outline" range="0,1,5" option="int" />
         <setting default="10" label="32518" type="slider" id="bottom_verticalmargin" range="-100,1,100" option="int" />
-        <setting label="32511" type="lsep"/>
+    </category>
+    <category label="33051">
         <setting default="Arial" subsetting="true" label="32512" id="top_font" type="labelenum" values="Arial|Verdana|DejaVu Sans|&lt;Kodi Subtitles Font&gt;"/>
         <setting default="Auto Chardet" subsetting="true" label="32529" id="top_characterset" type="select" values="Auto Chardet|Auto Charset_normalizer|Arabic (ISO)|Arabic (Windows)|Baltic (ISO)|Baltic (Windows)|Central Europe (ISO)|Central Europe (Windows)|Chinese Simplified (ISO)|Chinese Traditional (Big5)|Cyrillic (ISO)|Cyrillic (Windows)|Greek (ISO)|Greek (Windows)|Hebrew (ISO)|Hebrew (Windows)|Hong Kong (Big5-HKSCS)|Japanese (Shift-JIS)|Korean|Nordic Languages (ISO)|South Europe (ISO)|Thai (Windows)|Turkish (ISO)|Turkish (Windows)|Vietnamese (Windows)|UTF8|UTF16|UTF32|Western Europe (ISO)|Western Europe (Windows)"/>
         <setting default="17" subsetting="true" label="32513" type="slider" id="top_fontsize" range="12,1,30" option="int" />
@@ -36,6 +55,5 @@
         <setting default="0" subsetting="true" label="32523" type="slider" id="top_shadow" range="0,1,3" option="int" />
         <setting default="1" subsetting="true" label="32524" type="slider" id="top_outline" range="0,1,5" option="int" />
         <setting default="10" label="32518" type="slider" id="top_verticalmargin" range="-100,1,100" option="int" />
-        <setting id="last_used_subtitle_dir" type="text" default="" visible="false"/>
     </category>
 </settings>
