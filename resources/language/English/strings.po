@@ -168,7 +168,7 @@ msgctxt "#33058"
 msgid "AI Translation"
 
 msgctxt "#33059"
-msgid "Auto-translate missing preferred subtitle"
+msgid "Offer AI translation when preferred subtitles are missing"
 
 msgctxt "#33060"
 msgid "OpenAI API Key"
@@ -180,7 +180,7 @@ msgctxt "#33062"
 msgid "Lines per translation request"
 
 msgctxt "#33063"
-msgid "When only 1 preferred subtitle is found, the addon can translate it to the missing language.\nThe translated .srt is written in the same folder and may overwrite an existing translated file."
+msgid "When preferred subtitles are missing, the addon can show a popup to translate from a source .srt you choose from the video folder.\nThe translated .srt is written in the same folder and may overwrite an existing translated file."
 
 msgctxt "#33064"
 msgid "Translating subtitle with OpenAI..."
@@ -202,6 +202,27 @@ msgid "AI translation cancelled."
 
 msgctxt "#33073"
 msgid "OpenAI timeout (seconds)"
+
+msgctxt "#33074"
+msgid "Continue without translation"
+
+msgctxt "#33075"
+msgid "Translate missing %s subtitle..."
+
+msgctxt "#33076"
+msgid "Translate missing %s and %s subtitles..."
+
+msgctxt "#33077"
+msgid "No .srt files found to use as translation source."
+
+msgctxt "#33078"
+msgid "Choose source subtitle for translation"
+
+msgctxt "#33079"
+msgid "Preferred subtitles missing"
+
+msgctxt "#33080"
+msgid "AI translation completed for %s and %s."
 
 msgctxt "#32507"
 msgid "Bottom-Top"

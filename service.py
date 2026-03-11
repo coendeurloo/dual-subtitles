@@ -386,6 +386,10 @@ def _extract_json_payload(raw_content):
   return payload
 
 def _openai_translate_lines(lines, source_language_code, target_language_code, api_key, model, timeout_seconds):
+  source_hint = source_language_code
+  if not source_hint or source_hint == 'auto':
+    source_hint = 'the subtitle source language (auto-detect)'
+
   user_prompt = (
     'Translate subtitle lines from %s to %s.\n'
     'Return JSON only with this exact format: {"translations":["..."]}\n'
@@ -395,7 +399,7 @@ def _openai_translate_lines(lines, source_language_code, target_language_code, a
     '- Do not add notes or extra fields.\n'
     '\nLines JSON:\n%s'
   ) % (
-    source_language_code,
+    source_hint,
     target_language_code,
     json.dumps(lines, ensure_ascii=False)
   )
@@ -501,6 +505,56 @@ def _build_translated_subtitle_path(source_subtitle_path, target_language_code):
 
   return os.path.join(source_directory, '%s.srt' % (translated_base))
 
+def _guess_language_code_from_path(path):
+  filename = os.path.basename(path)
+  base = os.path.splitext(filename)[0]
+  match = re.search(r'[._-]([a-z]{2})$', base, re.IGNORECASE)
+  if match:
+    return match.group(1).lower()
+  return 'auto'
+
+def _list_srt_files(folder_path):
+  if not folder_path:
+    return []
+
+  try:
+    file_names = xbmcvfs.listdir(folder_path)[1]
+  except:
+    return []
+
+  candidates = []
+  for file_name in file_names:
+    if file_name.lower().endswith('.srt'):
+      candidates.append(os.path.join(folder_path, file_name))
+
+  candidates.sort(key=lambda item: os.path.basename(item).lower())
+  return candidates
+
+def _select_translation_source_subtitle(video_dir, fallback_dir=''):
+  source_dir = video_dir
+  candidates = _list_srt_files(source_dir)
+  if len(candidates) == 0 and fallback_dir and fallback_dir != video_dir:
+    source_dir = fallback_dir
+    candidates = _list_srt_files(source_dir)
+
+  if len(candidates) == 0:
+    _notify(__language__(33077), NOTIFY_WARNING)
+    _log('translation source selection failed: no .srt files in video/fallback dir', LOG_WARNING)
+    return None
+
+  labels = []
+  for path in candidates:
+    labels.append(os.path.basename(path))
+
+  selected = __msg_box__.select(__language__(33078), labels)
+  if selected is None or selected < 0:
+    _log('translation source selection cancelled', LOG_INFO)
+    return None
+
+  source_subtitle = candidates[selected]
+  _log('translation source selected: %s' % (source_subtitle), LOG_INFO)
+  return source_subtitle
+
 def _load_pysubs2():
   try:
     import pysubs2
@@ -596,49 +650,124 @@ def _translate_subtitle_file(source_subtitle_path, source_language_code, target_
     if temp_output:
       xbmcvfs.delete(temp_output)
 
-def _try_ai_translation_for_partial_match(automatch):
-  result = {
-    'status': 'disabled',
-    'subtitle1': None,
-    'subtitle2': None,
-  }
+def _build_translation_targets_for_automatch(automatch):
+  targets = []
+  language1 = _parse_language_code('preferred_language_1')
+  language2 = _parse_language_code('preferred_language_2')
+  if not language1 or not language2 or language1 == language2:
+    return targets
 
-  if automatch['mode'] != 'partial':
-    return result
+  if automatch['mode'] == 'partial':
+    if automatch['missing'] == 'subtitle2':
+      targets.append({
+        'slot': 'subtitle2',
+        'code': language2,
+        'label': _language_label('preferred_language_2')
+      })
+    elif automatch['missing'] == 'subtitle1':
+      targets.append({
+        'slot': 'subtitle1',
+        'code': language1,
+        'label': _language_label('preferred_language_1')
+      })
+  elif automatch['mode'] == 'none':
+    targets.append({
+      'slot': 'subtitle1',
+      'code': language1,
+      'label': _language_label('preferred_language_1')
+    })
+    targets.append({
+      'slot': 'subtitle2',
+      'code': language2,
+      'label': _language_label('preferred_language_2')
+    })
+
+  return targets
+
+def _prompt_ai_translation_plan(automatch, video_dir, start_dir):
+  result = {
+    'status': 'skip',
+    'source': None,
+    'targets': [],
+  }
 
   if not _is_ai_translation_enabled():
     return result
 
-  language1 = _parse_language_code('preferred_language_1')
-  language2 = _parse_language_code('preferred_language_2')
-  if not language1 or not language2:
-    result['status'] = 'skipped'
-    _log('ai translation skipped: invalid preferred language settings', LOG_WARNING)
+  if automatch['mode'] not in ['partial', 'none']:
+    return result
+
+  targets = _build_translation_targets_for_automatch(automatch)
+  if len(targets) == 0:
     return result
 
   if not _get_openai_api_key():
-    result['status'] = 'skipped'
     _notify(__language__(33067), NOTIFY_WARNING)
-    _log('ai translation skipped: openai_api_key is empty', LOG_WARNING)
+    _log('ai translation prompt skipped: openai_api_key is empty', LOG_WARNING)
     return result
 
+  if len(targets) == 1:
+    translate_option = __language__(33075) % (targets[0]['label'])
+  else:
+    translate_option = __language__(33076) % (targets[0]['label'], targets[1]['label'])
+
+  options = [
+    __language__(33074),
+    translate_option
+  ]
+  selected = __msg_box__.select(__language__(33079), options)
+  if selected != 1:
+    _log('ai translation skipped by user selection', LOG_INFO)
+    return result
+
+  source_dir = video_dir
+  if not _is_usable_browse_dir(source_dir):
+    source_dir = start_dir
+  source_subtitle = _select_translation_source_subtitle(source_dir, start_dir)
+  if source_subtitle is None:
+    return result
+
+  result['status'] = 'translate'
+  result['source'] = source_subtitle
+  result['targets'] = targets
+  return result
+
+def _run_ai_translation_plan(plan, automatch):
+  result = {
+    'status': 'skip',
+    'subtitle1': automatch.get('subtitle1'),
+    'subtitle2': automatch.get('subtitle2'),
+  }
+
+  if plan.get('status') != 'translate':
+    return result
+
+  source_subtitle = plan.get('source')
+  targets = plan.get('targets') or []
+  if not source_subtitle or len(targets) == 0:
+    return result
+
+  source_language_code = _guess_language_code_from_path(source_subtitle)
   try:
-    if automatch['missing'] == 'subtitle2':
-      translated_path = _translate_subtitle_file(automatch['subtitle1'], language1, language2)
-      result['subtitle1'] = automatch['subtitle1']
-      result['subtitle2'] = translated_path
-    else:
-      translated_path = _translate_subtitle_file(automatch['subtitle2'], language2, language1)
-      result['subtitle1'] = translated_path
-      result['subtitle2'] = automatch['subtitle2']
+    for target in targets:
+      translated_path = _translate_subtitle_file(source_subtitle, source_language_code, target['code'])
+      if target['slot'] == 'subtitle1':
+        result['subtitle1'] = translated_path
+      else:
+        result['subtitle2'] = translated_path
+      _notify(__language__(33065) % (target['label'], os.path.basename(translated_path)), NOTIFY_INFO)
+      _log('ai translation target complete: slot=%s path=%s' % (target['slot'], translated_path), LOG_INFO)
+
     result['status'] = 'success'
-    _notify(__language__(33065) % (automatch['missing_label'], os.path.basename(translated_path)), NOTIFY_INFO)
-    _log('ai translation success: missing=%s translated=%s' % (automatch['missing'], translated_path), LOG_INFO)
+    if len(targets) > 1:
+      _notify(__language__(33080) % (targets[0]['label'], targets[1]['label']), NOTIFY_INFO)
     return result
   except Exception as exc:
     result['status'] = 'failed'
+    result['subtitle1'] = automatch.get('subtitle1')
+    result['subtitle2'] = automatch.get('subtitle2')
     _notify(__language__(33066), NOTIFY_WARNING)
-    _log('ai translation failed: %s' % (exc), LOG_ERROR)
+    _log('ai translation plan failed: %s' % (exc), LOG_ERROR)
     return result
 
 def _match_subtitle_name(subtitle_name, video_basename, language_code, strict):
@@ -838,21 +967,30 @@ def _run_dual_subtitle_flow():
 
   automatch = _auto_match_subtitles(video_dir, video_basename)
   _log('dual flow start: video_dir=%s video_basename=%s start_dir=%s automatch_mode=%s' % (video_dir, video_basename, start_dir, automatch['mode']), LOG_DEBUG)
-  if automatch['mode'] == 'full':
-    subtitle1 = automatch['subtitle1']
-    subtitle2 = automatch['subtitle2']
-    subtitle1_dir = os.path.dirname(subtitle1)
-    _notify(__language__(33035) % (automatch['language1_label'], automatch['language2_label']), NOTIFY_INFO)
-
-  elif automatch['mode'] == 'partial':
-    _notify(__language__(33036) % (automatch['found_label'], automatch['missing_label']), NOTIFY_WARNING)
-    ai_translation_result = _try_ai_translation_for_partial_match(automatch)
-
-    if ai_translation_result['status'] == 'success':
-      subtitle1 = ai_translation_result['subtitle1']
-      subtitle2 = ai_translation_result['subtitle2']
+  translation_applied = False
+  translation_plan = _prompt_ai_translation_plan(automatch, video_dir, start_dir)
+  translation_result = _run_ai_translation_plan(translation_plan, automatch)
+  if translation_result['status'] == 'success':
+    subtitle1 = translation_result['subtitle1']
+    subtitle2 = translation_result['subtitle2']
+    if subtitle1 is not None:
       subtitle1_dir = os.path.dirname(subtitle1)
-    else:
+    elif subtitle2 is not None:
+      subtitle1 = subtitle2
+      subtitle2 = None
+      subtitle1_dir = os.path.dirname(subtitle1)
+    translation_applied = subtitle1 is not None
+    _log('ai translation applied: subtitle1=%s subtitle2=%s' % (subtitle1, subtitle2), LOG_INFO)
+
+  if not translation_applied:
+    if automatch['mode'] == 'full':
+      subtitle1 = automatch['subtitle1']
+      subtitle2 = automatch['subtitle2']
+      subtitle1_dir = os.path.dirname(subtitle1)
+      _notify(__language__(33035) % (automatch['language1_label'], automatch['language2_label']), NOTIFY_INFO)
+
+    elif automatch['mode'] == 'partial':
+      _notify(__language__(33036) % (automatch['found_label'], automatch['missing_label']), NOTIFY_WARNING)
       partial_behavior = _get_partial_match_behavior()
 
       if partial_behavior == 'manual_both':
@@ -906,11 +1044,11 @@ def _run_dual_subtitle_flow():
           _notify(__language__(33044), NOTIFY_INFO)
           force_manual_both = True
 
-  elif automatch['mode'] == 'ambiguous':
-    _notify(__language__(33038), NOTIFY_WARNING)
+    elif automatch['mode'] == 'ambiguous':
+      _notify(__language__(33038), NOTIFY_WARNING)
 
-  elif automatch['mode'] == 'none':
-    _notify(__language__(33037), NOTIFY_WARNING)
+    elif automatch['mode'] == 'none':
+      _notify(__language__(33037), NOTIFY_WARNING)
 
   apply_no_match_behavior = automatch['mode'] == 'none'
   if subtitle1 is None and subtitle2 is None:

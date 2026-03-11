@@ -22,8 +22,10 @@ Dual subtitle addon for Kodi, focused on speed and fewer clicks.
   - current video filename
   - preferred language 1
   - preferred language 2
-- Optional AI translation for partial matches:
-  - if one preferred subtitle is missing, it can be translated via OpenAI
+- Optional AI translation for missing preferred subtitles:
+  - if one or both preferred subtitles are missing, the addon can offer a translate popup
+  - you can choose a source `.srt` from the current video folder before translation starts
+  - if both preferred languages are missing, both can be translated from a single source subtitle
   - translated file is written next to the source subtitle (for example `Movie-ru.srt`)
 - Supports `.srt` and `.zip` (zip must contain `.srt`).
 - Keeps advanced dual-sub rendering options:
@@ -65,7 +67,9 @@ Dual subtitle addon for Kodi, focused on speed and fewer clicks.
 - `Lines per translation request`
 - `OpenAI timeout (seconds)`
 - Notes:
-  - translation is only attempted when auto-match finds exactly one preferred language
+  - translation is only offered when preferred subtitles are missing
+  - a popup asks whether to continue without translation or translate from a selected source `.srt`
+  - for two missing preferred languages, both translations can be generated from one source subtitle
   - subtitle text is sent to OpenAI
   - output is always a real `.srt` in the same folder as the source subtitle
   - existing translated target file may be overwritten to keep content in sync
