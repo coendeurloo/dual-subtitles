@@ -75,7 +75,7 @@ msgctxt "#33027"
 msgid "Ignore auto match and pick both manually"
 
 msgctxt "#33028"
-msgid "Require second subtitle"
+msgid "Dual subtitles only (require second subtitle)"
 
 msgctxt "#33029"
 msgid "Match Strictness"
@@ -159,10 +159,49 @@ msgctxt "#33055"
 msgid "What to do when only one preferred language is found."
 
 msgctxt "#33056"
-msgid "If enabled, loading stops unless both subtitles are selected."
+msgid "Enable this to force dual subtitles. Disable it to allow single-subtitle fallback."
 
 msgctxt "#33057"
 msgid "Set 2 preferred languages for automatic filename matching."
+
+msgctxt "#33058"
+msgid "AI Translation"
+
+msgctxt "#33059"
+msgid "Auto-translate missing preferred subtitle"
+
+msgctxt "#33060"
+msgid "OpenAI API Key"
+
+msgctxt "#33061"
+msgid "OpenAI Model"
+
+msgctxt "#33062"
+msgid "Lines per translation request"
+
+msgctxt "#33063"
+msgid "When only 1 preferred subtitle is found, the addon can translate it to the missing language.\nThe translated .srt is written in the same folder and may overwrite an existing translated file."
+
+msgctxt "#33064"
+msgid "Translating subtitle with OpenAI..."
+
+msgctxt "#33065"
+msgid "AI translation created %s subtitle (%s)."
+
+msgctxt "#33066"
+msgid "AI translation failed. Continuing with manual fallback."
+
+msgctxt "#33067"
+msgid "AI translation skipped: set your OpenAI API key first."
+
+msgctxt "#33071"
+msgid "Could not write translated subtitle file."
+
+msgctxt "#33072"
+msgid "AI translation cancelled."
+
+msgctxt "#33073"
+msgid "OpenAI timeout (seconds)"
 
 msgctxt "#32507"
 msgid "Bottom-Top"
