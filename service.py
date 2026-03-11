@@ -3,6 +3,7 @@
 import os
 import re
 import sys
+import json
 import xbmc
 import xbmcaddon
 import xbmcgui,xbmcplugin
@@ -10,6 +11,13 @@ import xbmcvfs
 import shutil
 
 import uuid
+import chardet
+
+try:
+  from urllib.request import Request, urlopen
+  from urllib.error import HTTPError, URLError
+except ImportError:
+  from urllib2 import Request, urlopen, HTTPError, URLError
 
 if sys.version_info[0] == 2:
     p2 = True
@@ -34,6 +42,8 @@ LOG_DEBUG = getattr(xbmc, 'LOGDEBUG', 0)
 LOG_INFO = getattr(xbmc, 'LOGINFO', getattr(xbmc, 'LOGNOTICE', 1))
 LOG_WARNING = getattr(xbmc, 'LOGWARNING', 2)
 LOG_ERROR = getattr(xbmc, 'LOGERROR', 4)
+OPENAI_CHAT_ENDPOINT = 'https://api.openai.com/v1/chat/completions'
+FENCED_JSON_REGEX = re.compile(r'^```(?:json)?\s*(.*?)\s*```$', re.DOTALL)
 
 try:
     translatePath = xbmcvfs.translatePath
@@ -263,6 +273,374 @@ def _language_label(setting_id):
     return __language__(33018)
   return language_value
 
+def _as_text(value):
+  if value is None:
+    return u''
+
+  try:
+    if p2:
+      if isinstance(value, unicode):
+        return value
+      return value.decode('utf-8', 'replace')
+    if isinstance(value, bytes):
+      return value.decode('utf-8', 'replace')
+  except:
+    pass
+
+  try:
+    return unicode(value)
+  except:
+    return str(value)
+
+def _to_utf8_bytes(text):
+  if text is None:
+    text = ''
+
+  if p2:
+    if isinstance(text, unicode):
+      return text.encode('utf-8')
+    return text
+
+  if isinstance(text, bytes):
+    return text
+  return _as_text(text).encode('utf-8')
+
+def _get_int_setting(setting_id, default_value, minimum_value, maximum_value):
+  value = __addon__.getSetting(setting_id)
+  try:
+    parsed = int(value)
+  except:
+    parsed = default_value
+
+  if parsed < minimum_value:
+    return minimum_value
+  if parsed > maximum_value:
+    return maximum_value
+  return parsed
+
+def _is_ai_translation_enabled():
+  return __addon__.getSetting('enable_ai_translation') == 'true'
+
+def _get_openai_api_key():
+  try:
+    return __addon__.getSetting('openai_api_key').strip()
+  except:
+    return ''
+
+def _get_openai_model():
+  model = __addon__.getSetting('openai_model')
+  if not model:
+    model = 'gpt-4.1-mini'
+  return model.strip()
+
+def _get_translation_batch_size():
+  return _get_int_setting('translation_batch_size', 25, 5, 100)
+
+def _get_translation_timeout_seconds():
+  return _get_int_setting('openai_timeout_seconds', 60, 15, 300)
+
+def _progress_update(progress, percent, line1='', line2=''):
+  if progress is None:
+    return
+
+  if percent < 0:
+    percent = 0
+  if percent > 100:
+    percent = 100
+
+  try:
+    progress.update(percent, line1, line2)
+    return
+  except:
+    pass
+
+  try:
+    progress.update(percent, line1)
+    return
+  except:
+    pass
+
+  try:
+    progress.update(percent)
+  except:
+    pass
+
+def _extract_json_payload(raw_content):
+  content = _as_text(raw_content).strip()
+  if not content:
+    raise RuntimeError('OpenAI returned an empty response.')
+
+  fence_match = FENCED_JSON_REGEX.match(content)
+  if fence_match:
+    content = fence_match.group(1).strip()
+
+  if not content.startswith('{'):
+    start_index = content.find('{')
+    end_index = content.rfind('}')
+    if start_index >= 0 and end_index > start_index:
+      content = content[start_index:end_index + 1]
+
+  payload = json.loads(content)
+  if not isinstance(payload, dict):
+    raise RuntimeError('OpenAI returned an invalid JSON payload.')
+  return payload
+
+def _openai_translate_lines(lines, source_language_code, target_language_code, api_key, model, timeout_seconds):
+  user_prompt = (
+    'Translate subtitle lines from %s to %s.\n'
+    'Return JSON only with this exact format: {"translations":["..."]}\n'
+    'Rules:\n'
+    '- Keep the same number of items and same order.\n'
+    '- Keep \\N markers and formatting tags like {\\i1} unchanged when present.\n'
+    '- Do not add notes or extra fields.\n'
+    '\nLines JSON:\n%s'
+  ) % (
+    source_language_code,
+    target_language_code,
+    json.dumps(lines, ensure_ascii=False)
+  )
+
+  request_payload = {
+    'model': model,
+    'temperature': 0,
+    'messages': [
+      {
+        'role': 'system',
+        'content': 'You are a subtitle translator. Return only valid JSON.'
+      },
+      {
+        'role': 'user',
+        'content': user_prompt
+      }
+    ]
+  }
+
+  request_data = _to_utf8_bytes(json.dumps(request_payload, ensure_ascii=False))
+  request = Request(OPENAI_CHAT_ENDPOINT, data=request_data)
+  request.add_header('Content-Type', 'application/json')
+  request.add_header('Authorization', 'Bearer %s' % (api_key))
+
+  try:
+    response = urlopen(request, timeout=timeout_seconds)
+    raw_response = response.read()
+  except HTTPError as exc:
+    body = ''
+    try:
+      body = _as_text(exc.read())
+    except:
+      pass
+    _log('openai request failed: code=%s body=%s' % (getattr(exc, 'code', 'unknown'), body), LOG_ERROR)
+    raise RuntimeError('OpenAI request failed (%s).' % (getattr(exc, 'code', 'unknown')))
+  except URLError as exc:
+    _log('openai request network error: %s' % (exc), LOG_ERROR)
+    raise RuntimeError('OpenAI request failed (network error).')
+  except Exception as exc:
+    _log('openai request unexpected error: %s' % (exc), LOG_ERROR)
+    raise RuntimeError('OpenAI request failed.')
+
+  try:
+    response_payload = json.loads(_as_text(raw_response))
+  except Exception as exc:
+    _log('openai response json parse failed: %s' % (exc), LOG_ERROR)
+    raise RuntimeError('OpenAI returned an invalid JSON response.')
+  choices = response_payload.get('choices') or []
+  if not choices:
+    raise RuntimeError('OpenAI returned no choices.')
+
+  message = choices[0].get('message') or {}
+  message_content = message.get('content')
+  try:
+    payload = _extract_json_payload(message_content)
+  except Exception as exc:
+    _log('openai response payload parse failed: %s content=%s' % (exc, _as_text(message_content)[:200]), LOG_ERROR)
+    raise RuntimeError('OpenAI returned an invalid translation payload.')
+  translations = payload.get('translations')
+  if not isinstance(translations, list):
+    raise RuntimeError('OpenAI response is missing translations.')
+  if len(translations) != len(lines):
+    raise RuntimeError('OpenAI returned %d translations for %d lines.' % (len(translations), len(lines)))
+
+  normalized = []
+  for item in translations:
+    normalized.append(_as_text(item))
+  return normalized
+
+def _copy_subtitle_to_temp(source_path):
+  temp_source = os.path.join(__temp__, '%s.srt' % (str(uuid.uuid4())))
+  if not xbmcvfs.copy(source_path, temp_source):
+    raise RuntimeError(__language__(33043))
+  return temp_source
+
+def _detect_text_encoding(local_subtitle_path):
+  try:
+    with open(local_subtitle_path, 'rb') as subtitle_file:
+      raw_data = subtitle_file.read()
+    detected = chardet.detect(raw_data)
+    encoding = detected.get('encoding')
+    if encoding and encoding.lower() == 'gb2312':
+      encoding = 'gbk'
+    if encoding:
+      return encoding
+  except Exception as exc:
+    _log('encoding detection failed: %s' % (exc), LOG_WARNING)
+  return 'utf-8'
+
+def _build_translated_subtitle_path(source_subtitle_path, target_language_code):
+  source_directory = os.path.dirname(source_subtitle_path)
+  source_filename = os.path.basename(source_subtitle_path)
+  source_base = os.path.splitext(source_filename)[0]
+
+  match = re.match(r'^(.*?)([._-])([a-z]{2})$', source_base, re.IGNORECASE)
+  if match:
+    translated_base = '%s%s%s' % (match.group(1), match.group(2), target_language_code.lower())
+  else:
+    translated_base = '%s-%s' % (source_base, target_language_code.lower())
+
+  if translated_base.lower() == source_base.lower():
+    translated_base = '%s-translated-%s' % (source_base, target_language_code.lower())
+
+  return os.path.join(source_directory, '%s.srt' % (translated_base))
+
+def _load_pysubs2():
+  try:
+    import pysubs2
+  except:
+    from lib import pysubs2
+  return pysubs2
+
+def _translate_subtitle_file(source_subtitle_path, source_language_code, target_language_code):
+  api_key = _get_openai_api_key()
+  if not api_key:
+    raise RuntimeError(__language__(33067))
+
+  model = _get_openai_model()
+  batch_size = _get_translation_batch_size()
+  timeout_seconds = _get_translation_timeout_seconds()
+
+  temp_source = ''
+  temp_output = ''
+  progress = None
+  try:
+    pysubs2 = _load_pysubs2()
+    temp_source = _copy_subtitle_to_temp(source_subtitle_path)
+    encoding = _detect_text_encoding(temp_source)
+
+    try:
+      subtitle_data = pysubs2.load(temp_source, encoding=encoding)
+    except:
+      subtitle_data = pysubs2.load(temp_source)
+
+    subtitle_lines = []
+    for line in subtitle_data:
+      if _as_text(line.text).strip():
+        subtitle_lines.append(line)
+
+    if len(subtitle_lines) == 0:
+      raise RuntimeError('No subtitle lines available for translation.')
+
+    progress = xbmcgui.DialogProgress()
+    progress.create(__scriptname__, __language__(33064))
+
+    translated_count = 0
+    total_lines = len(subtitle_lines)
+    index = 0
+    while index < total_lines:
+      try:
+        if progress.iscanceled():
+          raise RuntimeError(__language__(33072))
+      except RuntimeError:
+        raise
+      except:
+        pass
+
+      chunk_lines = subtitle_lines[index:index + batch_size]
+      request_lines = []
+      for item in chunk_lines:
+        request_lines.append(_as_text(item.text))
+
+      translated_lines = _openai_translate_lines(
+        request_lines,
+        source_language_code,
+        target_language_code,
+        api_key,
+        model,
+        timeout_seconds
+      )
+
+      for item_index in range(len(chunk_lines)):
+        chunk_lines[item_index].text = translated_lines[item_index]
+
+      translated_count += len(chunk_lines)
+      index += batch_size
+      _progress_update(progress, int((100.0 * translated_count) / total_lines), __language__(33064), '%d/%d' % (translated_count, total_lines))
+
+    temp_output = os.path.join(__temp__, '%s.srt' % (str(uuid.uuid4())))
+    subtitle_data.save(temp_output, encoding='utf-8', format_='srt')
+
+    translated_path = _build_translated_subtitle_path(source_subtitle_path, target_language_code)
+    if xbmcvfs.exists(translated_path):
+      xbmcvfs.delete(translated_path)
+    if not xbmcvfs.copy(temp_output, translated_path):
+      raise RuntimeError(__language__(33071))
+
+    _log('ai translation wrote subtitle=%s model=%s' % (translated_path, model), LOG_INFO)
+    return translated_path
+  finally:
+    if progress is not None:
+      try:
+        progress.close()
+      except:
+        pass
+    if temp_source:
+      xbmcvfs.delete(temp_source)
+    if temp_output:
+      xbmcvfs.delete(temp_output)
+
+def _try_ai_translation_for_partial_match(automatch):
+  result = {
+    'status': 'disabled',
+    'subtitle1': None,
+    'subtitle2': None,
+  }
+
+  if automatch['mode'] != 'partial':
+    return result
+
+  if not _is_ai_translation_enabled():
+    return result
+
+  language1 = _parse_language_code('preferred_language_1')
+  language2 = _parse_language_code('preferred_language_2')
+  if not language1 or not language2:
+    result['status'] = 'skipped'
+    _log('ai translation skipped: invalid preferred language settings', LOG_WARNING)
+    return result
+
+  if not _get_openai_api_key():
+    result['status'] = 'skipped'
+    _notify(__language__(33067), NOTIFY_WARNING)
+    _log('ai translation skipped: openai_api_key is empty', LOG_WARNING)
+    return result
+
+  try:
+    if automatch['missing'] == 'subtitle2':
+      translated_path = _translate_subtitle_file(automatch['subtitle1'], language1, language2)
+      result['subtitle1'] = automatch['subtitle1']
+      result['subtitle2'] = translated_path
+    else:
+      translated_path = _translate_subtitle_file(automatch['subtitle2'], language2, language1)
+      result['subtitle1'] = translated_path
+      result['subtitle2'] = automatch['subtitle2']
+    result['status'] = 'success'
+    _notify(__language__(33065) % (automatch['missing_label'], os.path.basename(translated_path)), NOTIFY_INFO)
+    _log('ai translation success: missing=%s translated=%s' % (automatch['missing'], translated_path), LOG_INFO)
+    return result
+  except Exception as exc:
+    result['status'] = 'failed'
+    _notify(__language__(33066), NOTIFY_WARNING)
+    _log('ai translation failed: %s' % (exc), LOG_ERROR)
+    return result
+
 def _match_subtitle_name(subtitle_name, video_basename, language_code, strict):
   name_lower = subtitle_name.lower()
   base_lower = video_basename.lower()
@@ -468,31 +846,20 @@ def _run_dual_subtitle_flow():
 
   elif automatch['mode'] == 'partial':
     _notify(__language__(33036) % (automatch['found_label'], automatch['missing_label']), NOTIFY_WARNING)
-    partial_behavior = _get_partial_match_behavior()
+    ai_translation_result = _try_ai_translation_for_partial_match(automatch)
 
-    if partial_behavior == 'manual_both':
-      _notify(__language__(33044), NOTIFY_INFO)
-      force_manual_both = True
-
-    elif partial_behavior == 'auto_use':
-      if automatch['missing'] == 'subtitle2':
-        subtitle1 = automatch['subtitle1']
-        subtitle1_dir = os.path.dirname(subtitle1)
-        title2 = __language__(33006) + ' ' + __language__(33009)
-        subtitle2, _ = _browse_for_subtitle(title2, subtitle1_dir)
-        if subtitle2 is None and _is_second_subtitle_required():
-          _notify(__language__(33040), NOTIFY_WARNING)
-          return
-      else:
-        subtitle2 = automatch['subtitle2']
-        browse_dir = os.path.dirname(subtitle2)
-        subtitle1, subtitle1_dir = _browse_for_subtitle(__language__(33005), browse_dir)
-        if subtitle1 is None:
-          return
-
+    if ai_translation_result['status'] == 'success':
+      subtitle1 = ai_translation_result['subtitle1']
+      subtitle2 = ai_translation_result['subtitle2']
+      subtitle1_dir = os.path.dirname(subtitle1)
     else:
-      message = __language__(33014) % (automatch['found_label'], automatch['missing_label'])
-      if __msg_box__.yesno(__scriptname__, message):
+      partial_behavior = _get_partial_match_behavior()
+
+      if partial_behavior == 'manual_both':
+        _notify(__language__(33044), NOTIFY_INFO)
+        force_manual_both = True
+
+      elif partial_behavior == 'auto_use':
         if automatch['missing'] == 'subtitle2':
           subtitle1 = automatch['subtitle1']
           subtitle1_dir = os.path.dirname(subtitle1)
@@ -506,10 +873,38 @@ def _run_dual_subtitle_flow():
           browse_dir = os.path.dirname(subtitle2)
           subtitle1, subtitle1_dir = _browse_for_subtitle(__language__(33005), browse_dir)
           if subtitle1 is None:
-            return
+            if _is_second_subtitle_required():
+              _notify(__language__(33040), NOTIFY_WARNING)
+              return
+            subtitle1 = subtitle2
+            subtitle2 = None
+            subtitle1_dir = browse_dir
+
       else:
-        _notify(__language__(33044), NOTIFY_INFO)
-        force_manual_both = True
+        message = __language__(33014) % (automatch['found_label'], automatch['missing_label'])
+        if __msg_box__.yesno(__scriptname__, message):
+          if automatch['missing'] == 'subtitle2':
+            subtitle1 = automatch['subtitle1']
+            subtitle1_dir = os.path.dirname(subtitle1)
+            title2 = __language__(33006) + ' ' + __language__(33009)
+            subtitle2, _ = _browse_for_subtitle(title2, subtitle1_dir)
+            if subtitle2 is None and _is_second_subtitle_required():
+              _notify(__language__(33040), NOTIFY_WARNING)
+              return
+          else:
+            subtitle2 = automatch['subtitle2']
+            browse_dir = os.path.dirname(subtitle2)
+            subtitle1, subtitle1_dir = _browse_for_subtitle(__language__(33005), browse_dir)
+            if subtitle1 is None:
+              if _is_second_subtitle_required():
+                _notify(__language__(33040), NOTIFY_WARNING)
+                return
+              subtitle1 = subtitle2
+              subtitle2 = None
+              subtitle1_dir = browse_dir
+        else:
+          _notify(__language__(33044), NOTIFY_INFO)
+          force_manual_both = True
 
   elif automatch['mode'] == 'ambiguous':
     _notify(__language__(33038), NOTIFY_WARNING)

@@ -21,6 +21,14 @@
         <setting label="33056" type="text" enable="false"/>
         <setting id="last_used_subtitle_dir" type="text" default="" visible="false"/>
     </category>
+    <category label="33058">
+        <setting label="33059" type="bool" subsetting="true" id="enable_ai_translation" default="false"/>
+        <setting id="openai_api_key" label="33060" type="text" option="hidden" default="" subsetting="true"/>
+        <setting id="openai_model" label="33061" type="text" default="gpt-4.1-mini" subsetting="true"/>
+        <setting id="translation_batch_size" label="33062" type="number" default="25" subsetting="true"/>
+        <setting id="openai_timeout_seconds" label="33073" type="number" default="60" subsetting="true"/>
+        <setting label="33063" type="text" enable="false"/>
+    </category>
     <category label="33048">
         <setting default="32507" subsetting="true" label="32517" id="subtitle_locations" type="labelenum" lvalues="32507|32508|32509" />
         <setting label="32525" type="bool" subsetting="true" id="dualsub_swap" default="false"/>
