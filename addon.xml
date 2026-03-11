@@ -1,7 +1,7 @@
 ﻿<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <addon id="service.subtitles.dualsubtitles"
        name="Dual Subtitles"
-       version="2.3.0"
+       version="2.3.1"
        provider-name="coendeurloo">
   <requires>
       <import addon="script.module.pysubs2" version="0.1.0"/>
@@ -21,6 +21,11 @@ The addon opens from the subtitle search screen and supports:
 - Existing dual-subtitle style and timing options</description>
     <disclaimer lang="en"></disclaimer>
 	<news>
+beta 0.4.1 (2026-03-11)
+- Added manual menu option to run Smart Sync on demand
+- Added manual menu option to run subtitle translation on demand
+- Smart Sync still asks before running in automatic mismatch flow
+
 beta 0.4 (2026-03-11)
 - Added Smart Sync for large subtitle drift (separate from Auto Shift)
 - Smart Sync now detects likely mismatch and asks whether to run sync

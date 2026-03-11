@@ -12,6 +12,8 @@ Dual subtitle addon for Kodi, focused on speed and fewer clicks.
 
 - Dual-subtitle workflow only:
   - `Choose Dual Subtitles...`
+  - `Run Smart Sync (manual)...`
+  - `Translate Subtitle (manual)...`
   - `Addon Settings...`
 - Smart start folder for browsing subtitles:
   1. current video folder (or last used first, configurable)

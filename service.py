@@ -95,6 +95,8 @@ def AddItem(name, url):
 
 def Search():
   AddItem(__language__(33004), "plugin://%s/?action=browsedual" % (__scriptid__))
+  AddItem(__language__(33120), "plugin://%s/?action=smartsyncmanual" % (__scriptid__))
+  AddItem(__language__(33121), "plugin://%s/?action=translatemanual" % (__scriptid__))
   AddItem(__language__(33008), "plugin://%s/?action=settings" % (__scriptid__))
 
 def get_params(string=""):
@@ -812,6 +814,59 @@ def _run_smart_sync_ai(reference_path, target_path):
     if target_local:
       xbmcvfs.delete(target_local)
 
+def _run_smart_sync_pipeline(reference_path, target_path):
+  result = {
+    'applied': False,
+    'play_path': target_path,
+    'temp_paths': [],
+  }
+
+  try:
+    local_result = _run_smart_sync_local(reference_path, target_path)
+  except Exception as exc:
+    _log('smart sync local stage failed: %s' % (exc), LOG_WARNING)
+    _notify(__language__(33109), NOTIFY_WARNING)
+    return result
+
+  _notify(__language__(33107) % (_smart_sync_confidence_percent(local_result), local_result.get('median_error_ms', 0)), NOTIFY_INFO)
+
+  chosen_result = local_result
+  if local_result.get('low_confidence'):
+    low_conf_title = __language__(33099) % (_smart_sync_confidence_percent(local_result), local_result.get('median_error_ms', 0))
+    low_conf_choice = __msg_box__.select(low_conf_title, [__language__(33110), __language__(33111), __language__(33112)])
+    if low_conf_choice == 2 or low_conf_choice < 0:
+      _log('smart sync skipped due low confidence user choice', LOG_INFO)
+      return result
+
+    if low_conf_choice == 1:
+      ai_result = None
+      try:
+        ai_result = _run_smart_sync_ai(reference_path, target_path)
+      except Exception as exc:
+        _log('smart sync ai stage failed: %s' % (exc), LOG_WARNING)
+        ai_result = None
+
+      if ai_result is not None:
+        chosen_result = ai_result
+        _notify(__language__(33102), NOTIFY_INFO)
+      else:
+        fallback_choice = __msg_box__.select(__language__(33105), [__language__(33110), __language__(33112)])
+        if fallback_choice != 0:
+          return result
+
+  sync_apply = _apply_synced_subtitle_to_target(target_path, chosen_result['synced_subs'])
+  method_label = _smart_sync_method_label(chosen_result.get('method', 'local'))
+  if sync_apply['persisted']:
+    _notify(__language__(33108) % (method_label), NOTIFY_INFO)
+  else:
+    _notify(__language__(33113), NOTIFY_WARNING)
+
+  result['applied'] = True
+  result['play_path'] = sync_apply['play_path']
+  if sync_apply.get('temp_path'):
+    result['temp_paths'].append(sync_apply['temp_path'])
+  return result
+
 def _apply_synced_subtitle_to_target(target_path, synced_subs):
   synced_temp = _save_subtitle_to_temp(synced_subs)
   backup_path = '%s.bak' % (target_path)
@@ -896,58 +951,49 @@ def _maybe_run_smart_sync(subtitle1, subtitle2, video_dir, start_dir):
   if reference_path is None:
     return subtitle1, subtitle2, []
 
-  try:
-    local_result = _run_smart_sync_local(reference_path, target_path)
-  except Exception as exc:
-    _log('smart sync local stage failed: %s' % (exc), LOG_WARNING)
-    _notify(__language__(33109), NOTIFY_WARNING)
+  sync_apply = _run_smart_sync_pipeline(reference_path, target_path)
+  if not sync_apply.get('applied'):
     return subtitle1, subtitle2, []
-
-  _notify(__language__(33107) % (_smart_sync_confidence_percent(local_result), local_result.get('median_error_ms', 0)), NOTIFY_INFO)
-
-  chosen_result = local_result
-  if local_result.get('low_confidence'):
-    low_conf_title = __language__(33099) % (_smart_sync_confidence_percent(local_result), local_result.get('median_error_ms', 0))
-    low_conf_choice = __msg_box__.select(low_conf_title, [__language__(33110), __language__(33111), __language__(33112)])
-    if low_conf_choice == 2 or low_conf_choice < 0:
-      _log('smart sync skipped due low confidence user choice', LOG_INFO)
-      return subtitle1, subtitle2, []
-
-    if low_conf_choice == 1:
-      ai_result = None
-      try:
-        ai_result = _run_smart_sync_ai(reference_path, target_path)
-      except Exception as exc:
-        _log('smart sync ai stage failed: %s' % (exc), LOG_WARNING)
-        ai_result = None
-
-      if ai_result is not None:
-        chosen_result = ai_result
-        _notify(__language__(33102), NOTIFY_INFO)
-      else:
-        fallback_choice = __msg_box__.select(__language__(33105), [__language__(33110), __language__(33112)])
-        if fallback_choice != 0:
-          return subtitle1, subtitle2, []
-
-  sync_apply = _apply_synced_subtitle_to_target(target_path, chosen_result['synced_subs'])
 
   updated_subtitle1 = subtitle1
   updated_subtitle2 = subtitle2
   if target_path.lower() == subtitle1.lower():
-    updated_subtitle1 = sync_apply['play_path']
+    updated_subtitle1 = sync_apply.get('play_path')
   elif target_path.lower() == subtitle2.lower():
-    updated_subtitle2 = sync_apply['play_path']
+    updated_subtitle2 = sync_apply.get('play_path')
 
-  method_label = _smart_sync_method_label(chosen_result.get('method', 'local'))
-  if sync_apply['persisted']:
-    _notify(__language__(33108) % (method_label), NOTIFY_INFO)
-  else:
-    _notify(__language__(33113), NOTIFY_WARNING)
+  return updated_subtitle1, updated_subtitle2, sync_apply.get('temp_paths', [])
 
-  temp_paths = []
-  if sync_apply.get('temp_path'):
-    temp_paths.append(sync_apply['temp_path'])
-  return updated_subtitle1, updated_subtitle2, temp_paths
+def _run_manual_smart_sync_action():
+  if not _is_smart_sync_enabled():
+    _notify(__language__(33131), NOTIFY_WARNING)
+    return
+
+  video_dir, _ = _current_video_context()
+  start_dir = _resolve_start_dir(video_dir)
+
+  target_path, target_dir = _browse_for_subtitle(__language__(33122), start_dir)
+  if target_path is None:
+    return
+  if not target_path.lower().endswith('.srt') or target_path.startswith(__temp__):
+    _notify(__language__(33123), NOTIFY_WARNING)
+    return
+
+  reference_path, _ = _browse_for_subtitle(__language__(33124), target_dir)
+  if reference_path is None:
+    return
+  if not reference_path.lower().endswith('.srt'):
+    _notify(__language__(33123), NOTIFY_WARNING)
+    return
+  if reference_path.lower() == target_path.lower():
+    _notify(__language__(33097), NOTIFY_WARNING)
+    return
+
+  sync_apply = _run_smart_sync_pipeline(reference_path, target_path)
+  if not sync_apply.get('applied'):
+    return
+
+  Download(sync_apply.get('play_path'))
 
 def _load_pysubs2():
   try:
@@ -1163,6 +1209,88 @@ def _run_ai_translation_plan(plan, automatch):
     _notify(__language__(33066), NOTIFY_WARNING)
     _log('ai translation plan failed: %s' % (exc), LOG_ERROR)
     return result
+
+def _preferred_translation_targets():
+  targets = []
+  language1 = _parse_language_code('preferred_language_1')
+  language2 = _parse_language_code('preferred_language_2')
+
+  if language1:
+    targets.append({
+      'code': language1,
+      'label': _language_label('preferred_language_1')
+    })
+  if language2 and language2 != language1:
+    targets.append({
+      'code': language2,
+      'label': _language_label('preferred_language_2')
+    })
+  return targets
+
+def _run_manual_translation_action():
+  if not _is_ai_translation_enabled():
+    _notify(__language__(33130), NOTIFY_WARNING)
+    return
+
+  if not _get_openai_api_key():
+    _notify(__language__(33067), NOTIFY_WARNING)
+    return
+
+  targets = _preferred_translation_targets()
+  if len(targets) == 0:
+    _notify(__language__(33125), NOTIFY_WARNING)
+    return
+
+  video_dir, _ = _current_video_context()
+  start_dir = _resolve_start_dir(video_dir)
+  source_subtitle = _select_translation_source_subtitle(video_dir, start_dir)
+  if source_subtitle is None:
+    return
+
+  options = []
+  if len(targets) == 1:
+    options.append(__language__(33127) % (targets[0]['label']))
+  else:
+    options.append(__language__(33127) % (targets[0]['label']))
+    options.append(__language__(33127) % (targets[1]['label']))
+    options.append(__language__(33128) % (targets[0]['label'], targets[1]['label']))
+
+  selected = __msg_box__.select(__language__(33126), options)
+  if selected is None or selected < 0:
+    _log('manual translation target selection cancelled', LOG_INFO)
+    return
+
+  selected_targets = []
+  if len(targets) == 1:
+    selected_targets = [targets[0]]
+  else:
+    if selected == 0:
+      selected_targets = [targets[0]]
+    elif selected == 1:
+      selected_targets = [targets[1]]
+    else:
+      selected_targets = [targets[0], targets[1]]
+
+  source_language_code = _guess_language_code_from_path(source_subtitle)
+  created = []
+  for target in selected_targets:
+    try:
+      translated_path = _translate_subtitle_file(source_subtitle, source_language_code, target['code'])
+      created.append((target, translated_path))
+      _notify(__language__(33065) % (target['label'], os.path.basename(translated_path)), NOTIFY_INFO)
+      _log('manual translation created: target=%s path=%s' % (target['code'], translated_path), LOG_INFO)
+    except Exception as exc:
+      _notify(__language__(33066), NOTIFY_WARNING)
+      _log('manual translation failed for %s: %s' % (target['code'], exc), LOG_WARNING)
+
+  if len(created) == 0:
+    return
+
+  if len(created) > 1:
+    _notify(__language__(33080) % (created[0][0]['label'], created[1][0]['label']), NOTIFY_INFO)
+
+  for _, translated_path in created:
+    Download(translated_path)
 
 def _match_subtitle_name(subtitle_name, video_basename, language_code, strict):
   name_lower = subtitle_name.lower()
@@ -1503,6 +1631,12 @@ elif action == 'search':
 
 elif action == 'browsedual':
   _run_dual_subtitle_flow()
+
+elif action == 'smartsyncmanual':
+  _run_manual_smart_sync_action()
+
+elif action == 'translatemanual':
+  _run_manual_translation_action()
 
 elif action == 'settings':
   __addon__.openSettings()

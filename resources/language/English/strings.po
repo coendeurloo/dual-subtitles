@@ -311,6 +311,39 @@ msgid "Skip Smart Sync"
 msgctxt "#33113"
 msgid "Smart Sync could not write target file. Using temporary synced subtitle for this playback."
 
+msgctxt "#33120"
+msgid "Run Smart Sync (manual)..."
+
+msgctxt "#33121"
+msgid "Translate Subtitle (manual)..."
+
+msgctxt "#33122"
+msgid "Choose target subtitle to sync"
+
+msgctxt "#33123"
+msgid "Smart Sync manual mode supports direct .srt subtitle files only."
+
+msgctxt "#33124"
+msgid "Choose reference subtitle for sync"
+
+msgctxt "#33125"
+msgid "Set at least one preferred language before manual translation."
+
+msgctxt "#33126"
+msgid "Choose translation target"
+
+msgctxt "#33127"
+msgid "Translate to %s"
+
+msgctxt "#33128"
+msgid "Translate to both %s and %s"
+
+msgctxt "#33130"
+msgid "Enable AI translation in settings to use manual translation."
+
+msgctxt "#33131"
+msgid "Enable Smart Sync in settings to use manual Smart Sync."
+
 msgctxt "#32507"
 msgid "Bottom-Top"
 
