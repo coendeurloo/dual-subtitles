@@ -13,6 +13,13 @@ WINDOW_STEP_MS = 120000
 WINDOW_MIN_POINTS = 6
 OUTLIER_OFFSET_DELTA_MS = 120000
 MAX_OFFSET_SCAN_MS = 600000
+NEAREST_PAIR_MAX_ERROR_MS = 45000
+NEAREST_PAIR_STRICT_ERROR_MS = 18000
+GLOBAL_SCAN_COARSE_STEP_MS = 1000
+GLOBAL_SCAN_FINE_STEP_MS = 250
+GLOBAL_SCAN_FINE_RANGE_MS = 2500
+LOCAL_WINDOW_SCAN_STEP_MS = 250
+LOCAL_WINDOW_SCAN_RANGE_MS = 30000
 
 
 def _as_text(value):
@@ -90,29 +97,111 @@ def _subtitle_points(subs):
     return points
 
 
-def _nearest_value(sorted_values, value):
-    if not sorted_values:
-        return None
-
-    position = bisect_left(sorted_values, value)
-    candidates = []
-    if position < len(sorted_values):
-        candidates.append(sorted_values[position])
-    if position > 0:
-        candidates.append(sorted_values[position - 1])
-    if not candidates:
-        return None
-    return min(candidates, key=lambda item: abs(item - value))
-
-
 def _point_lookup(points):
     lookup = {}
     starts = []
+    index_by_start = {}
     for point in points:
         lookup[point['id']] = point
         starts.append(point['start'])
+        index_by_start[point['start']] = point
     starts.sort()
-    return lookup, starts
+    return lookup, starts, index_by_start
+
+
+def _interval_overlap_score(reference_intervals, target_intervals, offset_ms):
+    if not reference_intervals or not target_intervals:
+        return 0.0
+
+    i = 0
+    j = 0
+    score = 0.0
+    while i < len(reference_intervals) and j < len(target_intervals):
+        reference_start, reference_end = reference_intervals[i]
+        target_start = target_intervals[j][0] + offset_ms
+        target_end = target_intervals[j][1] + offset_ms
+
+        if target_end <= reference_start:
+            j += 1
+            continue
+        if reference_end <= target_start:
+            i += 1
+            continue
+
+        overlap = min(reference_end, target_end) - max(reference_start, target_start)
+        if overlap > 0:
+            score += float(overlap)
+
+        if reference_end < target_end:
+            i += 1
+        else:
+            j += 1
+
+    return score
+
+
+def _scan_best_global_offset(reference_points, target_points):
+    if not reference_points or not target_points:
+        return 0.0
+
+    reference_intervals = [(item['start'], item['end']) for item in reference_points]
+    target_intervals = [(item['start'], item['end']) for item in target_points]
+
+    best_offset = 0
+    best_score = -1.0
+
+    offset = -MAX_OFFSET_SCAN_MS
+    while offset <= MAX_OFFSET_SCAN_MS:
+        score = _interval_overlap_score(reference_intervals, target_intervals, offset)
+        if score > best_score:
+            best_score = score
+            best_offset = offset
+        offset += GLOBAL_SCAN_COARSE_STEP_MS
+
+    fine_start = best_offset - GLOBAL_SCAN_FINE_RANGE_MS
+    fine_end = best_offset + GLOBAL_SCAN_FINE_RANGE_MS
+    offset = fine_start
+    while offset <= fine_end:
+        score = _interval_overlap_score(reference_intervals, target_intervals, offset)
+        if score > best_score:
+            best_score = score
+            best_offset = offset
+        offset += GLOBAL_SCAN_FINE_STEP_MS
+
+    return float(best_offset)
+
+
+def _window_intervals(points, window_start, window_end):
+    intervals = []
+    for point in points:
+        start = point['start']
+        end = point['end']
+        if end <= window_start:
+            continue
+        if start >= window_end:
+            break
+        intervals.append((start, end))
+    return intervals
+
+
+def _best_offset_for_window(reference_intervals, target_window_intervals, seed_offset):
+    if len(reference_intervals) == 0 or len(target_window_intervals) == 0:
+        return seed_offset, 0.0
+
+    best_offset = seed_offset
+    best_score = -1.0
+    scan_start = int(round(seed_offset - LOCAL_WINDOW_SCAN_RANGE_MS))
+    scan_end = int(round(seed_offset + LOCAL_WINDOW_SCAN_RANGE_MS))
+
+    offset = scan_start
+    while offset <= scan_end:
+        score = _interval_overlap_score(reference_intervals, target_window_intervals, offset)
+        if score > best_score:
+            best_score = score
+            best_offset = float(offset)
+        offset += LOCAL_WINDOW_SCAN_STEP_MS
+
+    return best_offset, best_score
 
 
 def _sample_points(points, max_items):
@@ -140,43 +229,111 @@ def _sample_points(points, max_items):
     return sampled
 
 
-def _progress_pairs(reference_points, target_points, max_items=320):
-    if not reference_points or not target_points:
+def _nearest_reference_point(reference_starts, reference_start_lookup, value):
+    if not reference_starts:
+        return None
+
+    position = bisect_left(reference_starts, value)
+    candidates = []
+    if position < len(reference_starts):
+        candidates.append(reference_starts[position])
+    if position > 0:
+        candidates.append(reference_starts[position - 1])
+    if not candidates:
+        return None
+
+    nearest_start = min(candidates, key=lambda item: abs(item - value))
+    return reference_start_lookup.get(nearest_start)
+
+
+def _collect_nearest_offsets(reference_points, target_points, hint_offset=0.0, max_error_ms=NEAREST_PAIR_MAX_ERROR_MS, max_items=360):
+    _, reference_starts, reference_start_lookup = _point_lookup(reference_points)
+    if not reference_starts or not target_points:
         return []
 
     sampled_target = _sample_points(target_points, min(max_items, len(target_points)))
-    if len(sampled_target) == 0:
-        return []
-
-    ref_max = len(reference_points) - 1
-    tgt_max = len(target_points) - 1
-    pairs = []
+    offsets = []
     for target_point in sampled_target:
-        if tgt_max <= 0:
-            ratio = 0.0
-        else:
-            ratio = float(target_point['order']) / float(tgt_max)
-        ref_index = int(round(ratio * ref_max))
-        if ref_index < 0:
-            ref_index = 0
-        if ref_index > ref_max:
-            ref_index = ref_max
-
-        reference_point = reference_points[ref_index]
-        pairs.append((reference_point, target_point))
-    return pairs
+        shifted_time = target_point['start'] + hint_offset
+        reference_point = _nearest_reference_point(reference_starts, reference_start_lookup, shifted_time)
+        if reference_point is None:
+            continue
+        nearest_error = abs(reference_point['start'] - shifted_time)
+        if nearest_error > max_error_ms:
+            continue
+        offsets.append({
+            'time': float(target_point['start']),
+            'offset': float(reference_point['start'] - target_point['start']),
+            'error': float(nearest_error),
+        })
+    return offsets
 
 
 def _estimate_global_offset(reference_points, target_points):
-    pairs = _progress_pairs(reference_points, target_points, max_items=320)
-    offsets = []
-    for reference_point, target_point in pairs:
-        offset = float(reference_point['start'] - target_point['start'])
-        if abs(offset) <= MAX_OFFSET_SCAN_MS:
-            offsets.append(offset)
-    if len(offsets) < 4:
-        return 0.0
-    return _median(offsets)
+    overlap_offset = _scan_best_global_offset(reference_points, target_points)
+    baseline = _collect_nearest_offsets(
+        reference_points,
+        target_points,
+        hint_offset=0.0,
+        max_error_ms=NEAREST_PAIR_STRICT_ERROR_MS,
+        max_items=420
+    )
+    baseline_offset = 0.0
+    if len(baseline) >= 6:
+        baseline_offset = _median([item['offset'] for item in baseline])
+
+    candidate_offsets = []
+    seen_candidate_keys = {}
+    for item in [overlap_offset, baseline_offset, 0.0]:
+        key = int(round(item))
+        if key in seen_candidate_keys:
+            continue
+        seen_candidate_keys[key] = True
+        candidate_offsets.append(float(item))
+
+    best_candidate_offset = candidate_offsets[0]
+    best_candidate_score = (99999999.0, 99999999.0, -1)
+    for candidate_offset in candidate_offsets:
+        sampled = _collect_nearest_offsets(
+            reference_points,
+            target_points,
+            hint_offset=candidate_offset,
+            max_error_ms=NEAREST_PAIR_STRICT_ERROR_MS,
+            max_items=420
+        )
+        if len(sampled) == 0:
+            continue
+        sampled_errors = [item['error'] for item in sampled]
+        candidate_score = (_median(sampled_errors), _percentile(sampled_errors, 0.9), -len(sampled))
+        if candidate_score < best_candidate_score:
+            best_candidate_score = candidate_score
+            best_candidate_offset = _median([item['offset'] for item in sampled])
+
+    coarse = _collect_nearest_offsets(
+        reference_points,
+        target_points,
+        hint_offset=best_candidate_offset,
+        max_error_ms=NEAREST_PAIR_MAX_ERROR_MS,
+        max_items=420
+    )
+    if len(coarse) < 6:
+        return overlap_offset
+
+    coarse_median = _median([item['offset'] for item in coarse if abs(item['offset']) <= MAX_OFFSET_SCAN_MS])
+    refined = _collect_nearest_offsets(
+        reference_points,
+        target_points,
+        hint_offset=coarse_median,
+        max_error_ms=NEAREST_PAIR_STRICT_ERROR_MS,
+        max_items=420
+    )
+    if len(refined) < 6:
+        return coarse_median
+
+    refined_offsets = [item['offset'] for item in refined if abs(item['offset']) <= MAX_OFFSET_SCAN_MS]
+    if len(refined_offsets) < 4:
+        return coarse_median
+    return _median(refined_offsets)
 
 
 def _build_offset_knots(reference_points, target_points, global_offset):
@@ -185,37 +342,45 @@ def _build_offset_knots(reference_points, target_points, global_offset):
 
     start_time = target_points[0]['start']
     end_time = target_points[-1]['start']
-    pair_offsets = []
-    for reference_point, target_point in _progress_pairs(reference_points, target_points, max_items=len(target_points)):
-        pair_offsets.append({
-            'time': target_point['start'],
-            'offset': float(reference_point['start'] - target_point['start']),
-        })
-
-    if len(pair_offsets) == 0:
+    reference_intervals = [(item['start'], item['end']) for item in reference_points]
+    if len(reference_intervals) == 0:
         return [{'time': float(start_time), 'offset': float(global_offset), 'count': len(target_points)}]
 
     knots = []
 
     center = start_time
+    previous_offset = float(global_offset)
     while center <= end_time:
-        offsets = []
-        count = 0
-        for item in pair_offsets:
-            if abs(item['time'] - center) > WINDOW_HALF_MS:
-                continue
-            offset = item['offset']
-            if abs(offset - global_offset) > OUTLIER_OFFSET_DELTA_MS:
-                continue
-            offsets.append(offset)
-            count += 1
+        target_window_intervals = _window_intervals(target_points, center - WINDOW_HALF_MS, center + WINDOW_HALF_MS)
+        count = len(target_window_intervals)
         if count >= WINDOW_MIN_POINTS:
-            knots.append({
-                'time': float(center),
-                'offset': float(_median(offsets)),
-                'count': count,
-            })
+            best_offset, best_score = _best_offset_for_window(reference_intervals, target_window_intervals, previous_offset)
+            if best_score > 0:
+                if abs(best_offset - global_offset) > OUTLIER_OFFSET_DELTA_MS:
+                    best_offset = float(global_offset)
+                previous_offset = best_offset
+                knots.append({
+                    'time': float(center),
+                    'offset': float(best_offset),
+                    'count': count,
+                })
         center += WINDOW_STEP_MS
+
+    if not knots:
+        # Fallback to nearest-pair smoothing when window overlap scanning cannot produce any usable knot.
+        pair_offsets = _collect_nearest_offsets(
+            reference_points,
+            target_points,
+            hint_offset=global_offset,
+            max_error_ms=NEAREST_PAIR_MAX_ERROR_MS,
+            max_items=len(target_points)
+        )
+        for item in pair_offsets:
+            knots.append({
+                'time': float(item['time']),
+                'offset': float(item['offset']),
+                'count': 1,
+            })
 
     if not knots:
         return [{'time': float(start_time), 'offset': float(global_offset), 'count': len(target_points)}]
@@ -289,11 +454,16 @@ def _evaluate_alignment(reference_points, synced_points):
             'total_points': len(synced_points),
         }
 
-    pairs = _progress_pairs(reference_points, synced_points, max_items=min(320, len(synced_points)))
     errors = []
     matched = 0
-    for reference_point, synced_point in pairs:
-        error = abs(int(reference_point['start'] - synced_point['start']))
+    for item in _collect_nearest_offsets(
+        reference_points,
+        synced_points,
+        hint_offset=0.0,
+        max_error_ms=MAX_OFFSET_SCAN_MS,
+        max_items=min(360, len(synced_points))
+    ):
+        error = abs(int(item['offset']))
         errors.append(error)
         if error <= MATCH_OK_THRESHOLD_MS:
             matched += 1
@@ -343,9 +513,14 @@ def assess_pair(reference_subs, target_subs):
             'point_count': len(target_points),
         }
 
-    raw_errors = []
-    for reference_point, target_point in _progress_pairs(reference_points, target_points, max_items=min(320, len(target_points))):
-        raw_errors.append(abs(int(reference_point['start'] - target_point['start'])))
+    raw_pairs = _collect_nearest_offsets(
+        reference_points,
+        target_points,
+        hint_offset=0.0,
+        max_error_ms=MAX_OFFSET_SCAN_MS,
+        max_items=min(380, len(target_points))
+    )
+    raw_errors = [abs(int(item['offset'])) for item in raw_pairs]
 
     if not raw_errors:
         return {
@@ -361,14 +536,30 @@ def assess_pair(reference_subs, target_subs):
     raw_median = _median(raw_errors)
     raw_p90 = _percentile(raw_errors, 0.9)
     raw_coverage = float(sum(1 for err in raw_errors if err <= MATCH_OK_THRESHOLD_MS)) / float(len(raw_errors))
+    reference_intervals = [(item['start'], item['end']) for item in reference_points]
+    target_intervals = [(item['start'], item['end']) for item in target_points]
+    overlap_zero = _interval_overlap_score(reference_intervals, target_intervals, 0)
+    overlap_shifted = _interval_overlap_score(reference_intervals, target_intervals, int(round(global_offset)))
+    if overlap_zero <= 0:
+        overlap_improvement = 1.0 if overlap_shifted > 0 else 0.0
+    else:
+        overlap_improvement = (float(overlap_shifted) - float(overlap_zero)) / float(overlap_zero)
 
-    likely_mismatch = abs(global_offset) >= RAW_MISMATCH_OFFSET_MS or raw_median >= RAW_MISMATCH_MEDIAN_MS
+    likely_mismatch = (
+        raw_median >= RAW_MISMATCH_MEDIAN_MS or
+        (
+            abs(global_offset) >= RAW_MISMATCH_OFFSET_MS and
+            overlap_improvement >= 0.18 and
+            raw_coverage <= 0.75
+        )
+    )
     return {
         'likely_mismatch': likely_mismatch,
         'raw_median_error_ms': int(round(raw_median)),
         'raw_p90_error_ms': int(round(raw_p90)),
         'estimated_global_offset_ms': int(round(global_offset)),
         'raw_coverage': round(raw_coverage, 4),
+        'overlap_improvement': round(overlap_improvement, 4),
         'point_count': len(target_points),
     }
 
@@ -409,8 +600,8 @@ def build_ai_samples(subs, max_items=70):
 def sync_from_anchor_pairs(reference_subs, target_subs, anchor_pairs):
     reference_points = _subtitle_points(reference_subs)
     target_points = _subtitle_points(target_subs)
-    reference_lookup, _ = _point_lookup(reference_points)
-    target_lookup, _ = _point_lookup(target_points)
+    reference_lookup, _, _ = _point_lookup(reference_points)
+    target_lookup, _, _ = _point_lookup(target_points)
 
     anchor_knots = []
     for pair in anchor_pairs:

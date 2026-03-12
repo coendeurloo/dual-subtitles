@@ -604,30 +604,22 @@ def _smart_sync_method_label(method_name):
     return __language__(33100)
   return __language__(33083)
 
-def _select_smart_sync_target(subtitle1, subtitle2):
-  options = [
-    __language__(33091) % (_safe_basename(subtitle1)),
-    __language__(33092) % (_safe_basename(subtitle2)),
-  ]
-  selected = __msg_box__.select(__language__(33090), options)
-  if selected is None or selected < 0:
-    _log('smart sync target selection cancelled', LOG_INFO)
-    return None
-  if selected == 0:
-    return subtitle1
-  return subtitle2
+def _collect_smart_sync_reference_candidates(excluded_paths, subtitle1, subtitle2, video_dir, start_dir):
+  excluded = {}
+  for path in excluded_paths or []:
+    if path:
+      excluded[path.lower()] = True
 
-def _collect_smart_sync_reference_candidates(target_path, subtitle1, subtitle2, video_dir, start_dir):
   selected_candidates = []
-  if subtitle1 and subtitle1.lower() != target_path.lower():
+  if subtitle1 and subtitle1.lower() not in excluded:
     selected_candidates.append((__language__(33093) % (_safe_basename(subtitle1)), subtitle1))
-  if subtitle2 and subtitle2.lower() != target_path.lower():
+  if subtitle2 and subtitle2.lower() not in excluded:
     selected_candidates.append((__language__(33093) % (_safe_basename(subtitle2)), subtitle2))
 
   folder_candidates = []
   for candidate_dir in _unique_paths([video_dir, start_dir]):
     for path in _list_srt_files(candidate_dir):
-      if path.lower() == target_path.lower():
+      if path.lower() in excluded:
         continue
       folder_candidates.append((__language__(33094) % (_safe_basename(path)), path))
 
@@ -645,8 +637,8 @@ def _collect_smart_sync_reference_candidates(target_path, subtitle1, subtitle2, 
     deduped.append((label, path))
   return deduped
 
-def _select_smart_sync_reference(target_path, subtitle1, subtitle2, video_dir, start_dir):
-  candidates = _collect_smart_sync_reference_candidates(target_path, subtitle1, subtitle2, video_dir, start_dir)
+def _select_smart_sync_reference(subtitle1, subtitle2, video_dir, start_dir):
+  candidates = _collect_smart_sync_reference_candidates([], subtitle1, subtitle2, video_dir, start_dir)
   if len(candidates) == 0:
     _notify(__language__(33095), NOTIFY_WARNING)
     _log('smart sync reference selection failed: no candidates', LOG_WARNING)
@@ -660,11 +652,34 @@ def _select_smart_sync_reference(target_path, subtitle1, subtitle2, video_dir, s
     _log('smart sync reference selection cancelled', LOG_INFO)
     return None
 
-  reference_path = candidates[selected][1]
-  if reference_path.lower() == target_path.lower():
-    _notify(__language__(33097), NOTIFY_WARNING)
+  return candidates[selected][1]
+
+def _select_smart_sync_target_for_dual(reference_path, subtitle1, subtitle2):
+  candidates = []
+  if subtitle1 and subtitle1.lower() != reference_path.lower():
+    candidates.append(('subtitle1', subtitle1))
+  if subtitle2 and subtitle2.lower() != reference_path.lower():
+    candidates.append(('subtitle2', subtitle2))
+
+  if len(candidates) == 0:
+    _log('smart sync target selection failed: no target candidates after reference selection', LOG_WARNING)
     return None
-  return reference_path
+
+  if len(candidates) == 1:
+    return candidates[0][1]
+
+  option_labels = []
+  for slot, path in candidates:
+    if slot == 'subtitle1':
+      option_labels.append(__language__(33091) % (_safe_basename(path)))
+    else:
+      option_labels.append(__language__(33092) % (_safe_basename(path)))
+
+  selected = __msg_box__.select(__language__(33090), option_labels)
+  if selected is None or selected < 0:
+    _log('smart sync target selection cancelled', LOG_INFO)
+    return None
+  return candidates[selected][1]
 
 def _openai_find_smart_sync_anchors(reference_samples, target_samples, api_key, model, timeout_seconds):
   user_prompt = (
@@ -935,7 +950,11 @@ def _maybe_run_smart_sync(subtitle1, subtitle2, video_dir, start_dir):
       xbmcvfs.delete(second_local)
 
   if not mismatch.get('likely_mismatch'):
-    _log('smart sync mismatch not detected: median=%s offset=%s' % (mismatch.get('raw_median_error_ms'), mismatch.get('estimated_global_offset_ms')), LOG_DEBUG)
+    _log(
+      'smart sync mismatch not detected: median=%s offset=%s overlap_improvement=%s'
+      % (mismatch.get('raw_median_error_ms'), mismatch.get('estimated_global_offset_ms'), mismatch.get('overlap_improvement')),
+      LOG_DEBUG
+    )
     return subtitle1, subtitle2, []
 
   start_message = __language__(33098) % (mismatch.get('raw_median_error_ms', 0), mismatch.get('estimated_global_offset_ms', 0))
@@ -944,11 +963,11 @@ def _maybe_run_smart_sync(subtitle1, subtitle2, video_dir, start_dir):
     _log('smart sync skipped by user after mismatch prompt', LOG_INFO)
     return subtitle1, subtitle2, []
 
-  target_path = _select_smart_sync_target(subtitle1, subtitle2)
-  if target_path is None:
-    return subtitle1, subtitle2, []
-  reference_path = _select_smart_sync_reference(target_path, subtitle1, subtitle2, video_dir, start_dir)
+  reference_path = _select_smart_sync_reference(subtitle1, subtitle2, video_dir, start_dir)
   if reference_path is None:
+    return subtitle1, subtitle2, []
+  target_path = _select_smart_sync_target_for_dual(reference_path, subtitle1, subtitle2)
+  if target_path is None:
     return subtitle1, subtitle2, []
 
   sync_apply = _run_smart_sync_pipeline(reference_path, target_path)
@@ -971,18 +990,19 @@ def _run_manual_smart_sync_action():
 
   video_dir, _ = _current_video_context()
   start_dir = _resolve_start_dir(video_dir)
+  base_dir = video_dir or start_dir
 
-  target_path, target_dir = _browse_for_subtitle(__language__(33122), start_dir)
-  if target_path is None:
+  reference_path, reference_dir = _browse_for_subtitle(__language__(33124), base_dir)
+  if reference_path is None:
     return
-  if not target_path.lower().endswith('.srt') or target_path.startswith(__temp__):
+  if not reference_path.lower().endswith('.srt') or reference_path.startswith(__temp__):
     _notify(__language__(33123), NOTIFY_WARNING)
     return
 
-  reference_path, _ = _browse_for_subtitle(__language__(33124), target_dir)
-  if reference_path is None:
+  target_path, _ = _browse_for_subtitle(__language__(33122), reference_dir)
+  if target_path is None:
     return
-  if not reference_path.lower().endswith('.srt'):
+  if not target_path.lower().endswith('.srt') or target_path.startswith(__temp__):
     _notify(__language__(33123), NOTIFY_WARNING)
     return
   if reference_path.lower() == target_path.lower():
