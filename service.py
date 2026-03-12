@@ -704,6 +704,60 @@ def _dualsubs_backup_path(target_path):
   work_dir = _get_dualsubtitles_work_dir_for_path(target_path)
   return os.path.join(work_dir, '%s.bak' % (target_name))
 
+def _move_file_to_dualsubtitles_folder(path):
+  if not path:
+    return False
+
+  destination = os.path.join(_get_dualsubtitles_work_dir_for_path(path), os.path.basename(path))
+  if path.lower() == destination.lower():
+    return True
+
+  if xbmcvfs.exists(destination):
+    xbmcvfs.delete(destination)
+  if not xbmcvfs.copy(path, destination):
+    return False
+  xbmcvfs.delete(path)
+  return True
+
+def _cleanup_generated_movie_sidecars(video_dir, video_basename):
+  if not video_dir or not video_basename:
+    return
+
+  candidate_names = set([
+    ('%s..srt' % (video_basename)).lower(),
+    ('%s..ass' % (video_basename)).lower(),
+  ])
+
+  try:
+    file_names = xbmcvfs.listdir(video_dir)[1]
+  except:
+    return
+
+  for file_name in file_names:
+    if file_name.lower() not in candidate_names:
+      continue
+    source_path = os.path.join(video_dir, file_name)
+    if _move_file_to_dualsubtitles_folder(source_path):
+      _log('moved generated sidecar to DualSubtitles: %s' % (source_path), LOG_INFO)
+    else:
+      _log('failed moving generated sidecar to DualSubtitles: %s' % (source_path), LOG_WARNING)
+
+def _derive_output_base_name_from_subtitle(path):
+  if not path:
+    return 'DualSubtitles'
+  base = os.path.splitext(os.path.basename(path))[0]
+  match = re.match(r'^(.*?)[._-]([a-z]{2})$', base, re.IGNORECASE)
+  if match:
+    base = match.group(1)
+  if not base:
+    return 'DualSubtitles'
+  return base
+
+def _build_merged_ass_output_path(primary_subtitle_path):
+  base_name = _derive_output_base_name_from_subtitle(primary_subtitle_path)
+  work_dir = _get_dualsubtitles_work_dir_for_path(primary_subtitle_path)
+  return os.path.join(work_dir, '%s.dual.ass' % (base_name))
+
 def _create_smart_sync_progress():
   progress = None
   try:
@@ -1239,7 +1293,8 @@ def _run_manual_smart_sync_action():
     _notify(__language__(33131), NOTIFY_WARNING)
     return
 
-  video_dir, _ = _current_video_context()
+  video_dir, video_basename = _current_video_context()
+  _cleanup_generated_movie_sidecars(video_dir, video_basename)
   start_dir = _resolve_start_dir(video_dir)
   base_dir = video_dir or start_dir
 
@@ -1264,8 +1319,6 @@ def _run_manual_smart_sync_action():
   if not sync_apply.get('applied'):
     return
 
-  Download(sync_apply.get('play_path'))
-
   if not __msg_box__.yesno(__scriptname__, __language__(33143)):
     return
 
@@ -1284,7 +1337,6 @@ def _run_manual_smart_sync_action():
     return
 
   _notify(__language__(33142), NOTIFY_INFO)
-  Download(second_sync_apply.get('play_path'))
 
 def _load_pysubs2():
   try:
@@ -1746,6 +1798,7 @@ def _remember_last_used_dir(path):
 
 def _prepare_and_merge_subtitles(subs):
   substemp = []
+  merged_temp = ''
   try:
     for sub in subs:
       # Python can fail to read subtitles from special Kodi locations (for example smb://).
@@ -1754,9 +1807,19 @@ def _prepare_and_merge_subtitles(subs):
       if not xbmcvfs.copy(sub, subtemp):
         raise RuntimeError(__language__(33043))
       substemp.append(subtemp)
-    merged = mergesubs(substemp)
-    _log('merged subtitles: count=%d output=%s' % (len(subs), merged), LOG_INFO)
-    return merged
+    merged_temp = mergesubs(substemp)
+
+    merged_output = _build_merged_ass_output_path(subs[0])
+    if xbmcvfs.exists(merged_output):
+      xbmcvfs.delete(merged_output)
+
+    if xbmcvfs.copy(merged_temp, merged_output):
+      xbmcvfs.delete(merged_temp)
+      _log('merged subtitles: count=%d output=%s' % (len(subs), merged_output), LOG_INFO)
+      return merged_output
+
+    _log('merged subtitles copy to DualSubtitles failed, using temp output=%s' % (merged_temp), LOG_WARNING)
+    return merged_temp
   finally:
     for subtemp in substemp:
       xbmcvfs.delete(subtemp)
@@ -1796,6 +1859,7 @@ def _pick_subtitles_with_settings(start_dir, apply_no_match_behavior=False, forc
 
 def _run_dual_subtitle_flow():
   video_dir, video_basename = _current_video_context()
+  _cleanup_generated_movie_sidecars(video_dir, video_basename)
   start_dir = _resolve_start_dir(video_dir)
 
   subtitle1 = None
