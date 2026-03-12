@@ -383,6 +383,15 @@ msgid "Sync a second subtitle with the same reference?"
 msgctxt "#33144"
 msgid "Choose second subtitle to sync"
 
+msgctxt "#33145"
+msgid "Smart Sync trigger mode"
+
+msgctxt "#33146"
+msgid "Auto prompt on mismatch"
+
+msgctxt "#33147"
+msgid "Manual only"
+
 msgctxt "#32507"
 msgid "Bottom-Top"
 

@@ -337,6 +337,12 @@ def _is_smart_sync_enabled():
     return True
   return setting == 'true'
 
+def _get_smart_sync_mode():
+  setting = __addon__.getSetting('smart_sync_mode')
+  if _equal_text(setting, 33146):
+    return 'auto_prompt'
+  return 'manual_only'
+
 def _get_openai_api_key():
   try:
     return __addon__.getSetting('openai_api_key').strip()
@@ -1142,6 +1148,10 @@ def _smart_sync_confidence_percent(sync_result):
 def _maybe_run_smart_sync(subtitle1, subtitle2, video_dir, start_dir):
   if not _is_smart_sync_enabled():
     _log('smart sync disabled in settings', LOG_DEBUG)
+    return subtitle1, subtitle2, []
+
+  if _get_smart_sync_mode() != 'auto_prompt':
+    _log('smart sync auto mode disabled (manual only)', LOG_DEBUG)
     return subtitle1, subtitle2, []
 
   if subtitle1 is None or subtitle2 is None:
