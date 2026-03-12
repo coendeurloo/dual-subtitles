@@ -653,16 +653,82 @@ def _detect_language_from_content(path):
 def _build_subtitle_prepicker_entries(folder_path):
   entries = []
   for path in _list_srt_files(folder_path):
+    if _is_generated_subtitle_name(path):
+      continue
     language_code = _detect_language_from_filename(path)
+    source_rank = 1
     if not language_code:
       language_code = _detect_language_from_content(path)
+      source_rank = 2
     if not language_code:
       language_code = 'unk'
 
     display_name = _build_compact_display_name(os.path.basename(path))
     label = '[%s] %s' % (language_code.upper(), display_name)
-    entries.append((label, path))
-  return entries
+    entries.append({
+      'label': label,
+      'path': path,
+      'source_rank': source_rank,
+      'unknown_rank': 1 if language_code == 'unk' else 0,
+    })
+
+  entries.sort(key=lambda item: (item['unknown_rank'], item['source_rank'], os.path.basename(item['path']).lower()))
+  normalized = []
+  for item in entries:
+    normalized.append((item['label'], item['path']))
+  return normalized
+
+def _get_dualsubtitles_work_dir_for_path(path):
+  base_dir = os.path.dirname(path)
+  work_dir = os.path.join(base_dir, 'DualSubtitles')
+  try:
+    xbmcvfs.mkdirs(work_dir)
+  except:
+    pass
+  return work_dir
+
+def _dualsubs_work_temp_path(target_path, extension):
+  work_dir = _get_dualsubtitles_work_dir_for_path(target_path)
+  extension = extension if extension.startswith('.') else ('.%s' % (extension))
+  filename = 'smartsync-%s%s' % (str(uuid.uuid4()), extension)
+  return os.path.join(work_dir, filename)
+
+def _dualsubs_backup_path(target_path):
+  target_name = os.path.basename(target_path)
+  work_dir = _get_dualsubtitles_work_dir_for_path(target_path)
+  return os.path.join(work_dir, '%s.bak' % (target_name))
+
+def _create_smart_sync_progress():
+  progress = None
+  try:
+    progress = xbmcgui.DialogProgress()
+    progress.create(__scriptname__, __language__(33134))
+  except:
+    progress = None
+  return progress
+
+def _close_progress(progress):
+  if progress is None:
+    return
+  try:
+    progress.close()
+  except:
+    pass
+
+def _set_smart_sync_progress(progress, percent, message_id):
+  _progress_update(progress, percent, __language__(message_id))
+
+def _is_generated_subtitle_name(path):
+  name = os.path.basename(path).lower()
+  if name.endswith('.srt.bak'):
+    return True
+  if '..srt' in name:
+    return True
+  if '-translated-' in name:
+    return True
+  if 'smartsync-' in name:
+    return True
+  return False
 
 def _select_translation_source_subtitle(video_dir, fallback_dir=''):
   source_dir = video_dir
@@ -960,10 +1026,14 @@ def _run_smart_sync_pipeline(reference_path, target_path):
     'play_path': target_path,
     'temp_paths': [],
   }
+  progress = _create_smart_sync_progress()
 
   try:
+    _set_smart_sync_progress(progress, 8, 33135)
     local_result = _run_smart_sync_local(reference_path, target_path)
+    _set_smart_sync_progress(progress, 45, 33136)
   except Exception as exc:
+    _close_progress(progress)
     _log('smart sync local stage failed: %s' % (exc), LOG_WARNING)
     _notify(__language__(33109), NOTIFY_WARNING)
     return result
@@ -975,13 +1045,16 @@ def _run_smart_sync_pipeline(reference_path, target_path):
     low_conf_title = __language__(33099) % (_smart_sync_confidence_percent(local_result), local_result.get('median_error_ms', 0))
     low_conf_choice = __msg_box__.select(low_conf_title, [__language__(33110), __language__(33111), __language__(33112)])
     if low_conf_choice == 2 or low_conf_choice < 0:
+      _close_progress(progress)
       _log('smart sync skipped due low confidence user choice', LOG_INFO)
       return result
 
     if low_conf_choice == 1:
       ai_result = None
       try:
+        _set_smart_sync_progress(progress, 62, 33137)
         ai_result = _run_smart_sync_ai(reference_path, target_path)
+        _set_smart_sync_progress(progress, 78, 33138)
       except Exception as exc:
         _log('smart sync ai stage failed: %s' % (exc), LOG_WARNING)
         ai_result = None
@@ -992,9 +1065,13 @@ def _run_smart_sync_pipeline(reference_path, target_path):
       else:
         fallback_choice = __msg_box__.select(__language__(33105), [__language__(33110), __language__(33112)])
         if fallback_choice != 0:
+          _close_progress(progress)
           return result
 
+  _set_smart_sync_progress(progress, 88, 33139)
   sync_apply = _apply_synced_subtitle_to_target(target_path, chosen_result['synced_subs'])
+  _set_smart_sync_progress(progress, 100, 33140)
+  _close_progress(progress)
   method_label = _smart_sync_method_label(chosen_result.get('method', 'local'))
   if sync_apply['persisted']:
     _notify(__language__(33108) % (method_label), NOTIFY_INFO)
@@ -1008,8 +1085,13 @@ def _run_smart_sync_pipeline(reference_path, target_path):
   return result
 
 def _apply_synced_subtitle_to_target(target_path, synced_subs):
-  synced_temp = _save_subtitle_to_temp(synced_subs)
-  backup_path = '%s.bak' % (target_path)
+  local_synced_temp = _save_subtitle_to_temp(synced_subs)
+  synced_temp = local_synced_temp
+  work_synced_temp = _dualsubs_work_temp_path(target_path, '.srt')
+  if xbmcvfs.copy(local_synced_temp, work_synced_temp):
+    synced_temp = work_synced_temp
+    xbmcvfs.delete(local_synced_temp)
+  backup_path = _dualsubs_backup_path(target_path)
 
   try:
     if xbmcvfs.exists(backup_path):
@@ -1479,6 +1561,8 @@ def _find_subtitle_matches(video_dir, video_basename, language_code, strict):
   matches = []
   seen = {}
   for subtitle_name in files:
+    if _is_generated_subtitle_name(subtitle_name):
+      continue
     if _match_subtitle_name(subtitle_name, video_basename, language_code, strict):
       full_path = os.path.join(video_dir, subtitle_name)
       lower_key = full_path.lower()

@@ -350,6 +350,27 @@ msgid "Browse other folder..."
 msgctxt "#33133"
 msgid "Cancel"
 
+msgctxt "#33134"
+msgid "Smart Sync in progress"
+
+msgctxt "#33135"
+msgid "Loading subtitle files..."
+
+msgctxt "#33136"
+msgid "Running local Smart Sync..."
+
+msgctxt "#33137"
+msgid "Running AI fallback..."
+
+msgctxt "#33138"
+msgid "Evaluating AI sync result..."
+
+msgctxt "#33139"
+msgid "Writing synced subtitle..."
+
+msgctxt "#33140"
+msgid "Smart Sync complete."
+
 msgctxt "#32507"
 msgid "Bottom-Top"
 
