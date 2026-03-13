@@ -29,6 +29,22 @@
         <setting id="openai_timeout_seconds" label="33073" type="number" default="60" subsetting="true"/>
         <setting label="33063" type="text" enable="false"/>
     </category>
+    <category label="33163">
+        <setting label="33164" type="bool" subsetting="true" id="enable_subtitle_download" default="false"/>
+        <setting label="33165" type="bool" subsetting="true" id="download_auto_on_missing" default="true"/>
+        <setting label="33170" type="number" subsetting="true" id="download_max_results" default="12"/>
+        <setting type="lsep"/>
+        <setting label="33166" type="bool" subsetting="true" id="provider_opensubtitles_enabled" default="true"/>
+        <setting id="provider_opensubtitles_username" label="33167" type="text" default="" subsetting="true"/>
+        <setting id="provider_opensubtitles_password" label="33168" type="text" option="hidden" default="" subsetting="true"/>
+        <setting id="provider_opensubtitles_api_key" label="33169" type="text" option="hidden" default="" subsetting="true"/>
+        <setting type="lsep"/>
+        <setting label="33220" type="bool" subsetting="true" id="provider_podnadpisi_enabled" default="true"/>
+        <setting label="33221" type="bool" subsetting="true" id="provider_subdl_enabled" default="false"/>
+        <setting id="provider_subdl_api_key" label="33222" type="text" option="hidden" default="" subsetting="true" enable="eq(-1,true)"/>
+        <setting label="33228" type="bool" subsetting="true" id="provider_bsplayer_enabled" default="false"/>
+        <setting label="33171" type="text" enable="false"/>
+    </category>
     <category label="33048">
         <setting default="32507" subsetting="true" label="32517" id="subtitle_locations" type="labelenum" lvalues="32507|32508|32509" />
         <setting label="32525" type="bool" subsetting="true" id="dualsub_swap" default="false"/>

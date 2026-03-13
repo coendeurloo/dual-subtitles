@@ -4,6 +4,8 @@ import os
 import re
 import sys
 import json
+import difflib
+import struct
 import xbmc
 import xbmcaddon
 import xbmcgui,xbmcplugin
@@ -36,6 +38,15 @@ else:
 
 from resources.lib.dualsubs import mergesubs
 from resources.lib import smartsync
+from resources.lib.providers.registry import (
+  get_enabled_subtitle_providers,
+  ProviderAuthError,
+  ProviderRequestError,
+)
+try:
+  from resources.lib.downloadpicker import DownloadPickerDialog
+except Exception:
+  DownloadPickerDialog = None
 
 __addon__ = xbmcaddon.Addon()
 __author__     = __addon__.getAddonInfo('author')
@@ -43,6 +54,8 @@ __scriptid__   = __addon__.getAddonInfo('id')
 __scriptname__ = __addon__.getAddonInfo('name')
 __version__    = __addon__.getAddonInfo('version')
 __language__   = __addon__.getLocalizedString
+LEGACY_ADDON_IDS = ['service.subtitles.dualsubtitles']
+LEGACY_PROFILE_MIGRATION_SETTING = 'legacy_profile_migrated_from'
 
 LANGUAGE_CODE_REGEX = re.compile(r'\(([a-z]{2,3}(?:-[a-z0-9]{2,8})?)\)\s*$', re.IGNORECASE)
 LANGUAGE_SUFFIX_REGEX = re.compile(r'[._-]([a-z]{2,3}(?:-[a-z0-9]{2,8})?)$', re.IGNORECASE)
@@ -55,6 +68,7 @@ LOG_INFO = getattr(xbmc, 'LOGINFO', getattr(xbmc, 'LOGNOTICE', 1))
 LOG_WARNING = getattr(xbmc, 'LOGWARNING', 2)
 LOG_ERROR = getattr(xbmc, 'LOGERROR', 4)
 OPENAI_CHAT_ENDPOINT = 'https://api.openai.com/v1/chat/completions'
+DOWNLOAD_TIMEOUT_SECONDS = 45
 FENCED_JSON_REGEX = re.compile(r'^```(?:json)?\s*(.*?)\s*```$', re.DOTALL)
 KNOWN_SUBTITLE_LANGUAGE_CODES = set([
   'af', 'sq', 'ar', 'hy', 'az', 'eu', 'be', 'bn', 'bs', 'bg', 'ca', 'zh', 'hr', 'cs', 'da',
@@ -88,6 +102,61 @@ LANGUAGE_CODE_ALIASES = {
   'sk': ['slk', 'slo'], 'sl': ['slv'], 'es': ['spa'], 'sv': ['swe'], 'ta': ['tam'],
   'th': ['tha'], 'tr': ['tur'], 'uk': ['ukr'], 'ur': ['urd'], 'vi': ['vie'], 'cy': ['cym', 'wel']
 }
+DOWNLOAD_PROVIDER_WARNING_SHOWN = {}
+SYNC_TIER_PRIORITY = {
+  'unknown': 0,
+  'likely': 1,
+  'exact': 2,
+}
+RELEASE_SOURCE_GROUPS = {
+  'web': set(['web', 'webdl', 'webrip', 'webcap', 'webdlrip']),
+  'bluray': set(['bluray', 'bdrip', 'brrip', 'bdrip', 'bdremux', 'remux', 'uhdbluray', 'uhdbdrip']),
+  'dvd': set(['dvd', 'dvdrip', 'dvdscr', 'dvd5', 'dvd9']),
+  'hdtv': set(['hdtv', 'pdtv']),
+}
+RELEASE_CODEC_GROUPS = {
+  'h264': set(['x264', 'h264', '264', 'avc']),
+  'h265': set(['x265', 'h265', '265', 'hevc']),
+  'av1': set(['av1']),
+  'xvid': set(['xvid', 'divx']),
+}
+RELEASE_HDR_GROUPS = {
+  'hdr': set(['hdr', 'hdr10', 'hdr10plus', 'dv', 'dovi', 'dolbyvision', 'vision']),
+  'sdr': set(['sdr', '8bit']),
+}
+RELEASE_AUDIO_TOKENS = set([
+  'dts', 'dtshd', 'aac', 'ac3', 'dd', 'ddp', 'ddp5', 'dd5', 'atmos', 'truehd', 'eac3'
+])
+RELEASE_NOISE_TOKENS = set([
+  'the', 'and', 'for', 'sub', 'subs', 'subtitle', 'subtitles', 'srt', 'proper', 'repack'
+])
+DOWNLOAD_PROVIDER_COLORS = {
+  'opensubtitles': 'springgreen',
+  'podnadpisi': 'orange',
+  'subdl': 'deepskyblue',
+  'bsplayer': 'gold',
+}
+LANGUAGE_FLAG_EMOJI = {
+  'en': u'\U0001F1EC\U0001F1E7',
+  'nl': u'\U0001F1F3\U0001F1F1',
+  'ru': u'\U0001F1F7\U0001F1FA',
+  'de': u'\U0001F1E9\U0001F1EA',
+  'fr': u'\U0001F1EB\U0001F1F7',
+  'es': u'\U0001F1EA\U0001F1F8',
+  'it': u'\U0001F1EE\U0001F1F9',
+  'pt': u'\U0001F1F5\U0001F1F9',
+  'ja': u'\U0001F1EF\U0001F1F5',
+  'ko': u'\U0001F1F0\U0001F1F7',
+  'zh': u'\U0001F1E8\U0001F1F3',
+  'ar': u'\U0001F1F8\U0001F1E6',
+  'tr': u'\U0001F1F9\U0001F1F7',
+  'sv': u'\U0001F1F8\U0001F1EA',
+  'no': u'\U0001F1F3\U0001F1F4',
+  'da': u'\U0001F1E9\U0001F1F0',
+  'fi': u'\U0001F1EB\U0001F1EE',
+  'pl': u'\U0001F1F5\U0001F1F1',
+  'uk': u'\U0001F1FA\U0001F1E6',
+}
 
 try:
     translatePath = xbmcvfs.translatePath
@@ -106,9 +175,80 @@ __profile__    = translatePath(__addon__.getAddonInfo('profile'))
 if p2:
     __profile__ = __profile__.decode("utf-8")
 
+def _bootstrap_log(message, level=LOG_INFO):
+  try:
+    xbmc.log('[%s] %s' % (__scriptid__, message), level)
+  except:
+    pass
+
+def _listdir_safe(path):
+  try:
+    return xbmcvfs.listdir(path)
+  except:
+    return ([], [])
+
+def _copy_tree(src, dst):
+  if not xbmcvfs.exists(dst):
+    xbmcvfs.mkdirs(dst)
+
+  directories, files = _listdir_safe(src)
+  for file_name in files:
+    source_file = os.path.join(src, file_name)
+    destination_file = os.path.join(dst, file_name)
+    if not xbmcvfs.copy(source_file, destination_file):
+      raise IOError('copy failed: %s' % (source_file))
+
+  for directory in directories:
+    if directory.lower() == 'temp':
+      continue
+    _copy_tree(os.path.join(src, directory), os.path.join(dst, directory))
+
+def _migrate_legacy_profile_if_needed():
+  if __scriptid__ in LEGACY_ADDON_IDS:
+    return
+
+  migration_marker = __addon__.getSetting(LEGACY_PROFILE_MIGRATION_SETTING)
+  if migration_marker:
+    return
+
+  if xbmcvfs.exists(os.path.join(__profile__, 'settings.xml')):
+    return
+
+  profile_root = os.path.dirname(os.path.normpath(__profile__))
+  for legacy_addon_id in LEGACY_ADDON_IDS:
+    legacy_profile_path = os.path.join(profile_root, legacy_addon_id)
+    legacy_settings_path = os.path.join(legacy_profile_path, 'settings.xml')
+    if not xbmcvfs.exists(legacy_settings_path):
+      continue
+
+    try:
+      xbmcvfs.mkdirs(__profile__)
+      _copy_tree(legacy_profile_path, __profile__)
+      __addon__.setSetting(LEGACY_PROFILE_MIGRATION_SETTING, legacy_addon_id)
+      _bootstrap_log('migrated profile settings from %s' % (legacy_addon_id), LOG_INFO)
+      return
+    except Exception as error:
+      _bootstrap_log('profile migration failed from %s: %s' % (legacy_addon_id, error), LOG_WARNING)
+
+_migrate_legacy_profile_if_needed()
+
 __temp__       = translatePath(os.path.join(__profile__, 'temp', ''))
 if p2:
     __temp__ = __temp__.decode("utf-8")
+
+__media__      = translatePath(os.path.join(__cwd__, 'resources', 'media'))
+if p2:
+    __media__ = __media__.decode("utf-8")
+
+__flags__      = translatePath(os.path.join(__media__, 'flags'))
+if p2:
+    __flags__ = __flags__.decode("utf-8")
+
+__syncicons__  = translatePath(os.path.join(__media__, 'sync'))
+if p2:
+    __syncicons__ = __syncicons__.decode("utf-8")
+
+DOWNLOAD_PICKER_XML = 'DualSubtitlesDownloadPicker.xml'
 
 if xbmcvfs.exists(__temp__):
   shutil.rmtree(__temp__)
@@ -137,6 +277,7 @@ def AddItem(name, url):
   xbmcplugin.addDirectoryItem(handle=int(sys.argv[1]), url=url, listitem=listitem, isFolder=False)
 
 def Search():
+  AddItem(__language__(33162), "plugin://%s/?action=downloadmanual" % (__scriptid__))
   AddItem(__language__(33004), "plugin://%s/?action=browsedual" % (__scriptid__))
   AddItem(__language__(33120), "plugin://%s/?action=smartsyncmanual" % (__scriptid__))
   AddItem(__language__(33121), "plugin://%s/?action=translatemanual" % (__scriptid__))
@@ -287,6 +428,120 @@ def _current_video_context():
   video_name = os.path.splitext(os.path.basename(video_file))[0]
   return video_dir, video_name
 
+def _current_video_file_path():
+  try:
+    video_file = xbmc.Player().getPlayingFile()
+  except Exception:
+    video_file = ''
+
+  if not video_file:
+    return ''
+  if _is_disallowed_browse_path(video_file):
+    return ''
+  return video_file
+
+def _compute_file_hash_and_size(file_path):
+  if not file_path:
+    return '', 0
+  if file_path.startswith('plugin://'):
+    return '', 0
+
+  try:
+    file_size = int(os.path.getsize(file_path))
+  except Exception:
+    return '', 0
+
+  if file_size <= 0:
+    return '', 0
+
+  chunk_size = 65536
+  if file_size < (chunk_size * 2):
+    return '', file_size
+
+  try:
+    file_hash = file_size
+    with open(file_path, 'rb') as file_handle:
+      for _ in range(int(chunk_size / 8)):
+        block = file_handle.read(8)
+        if len(block) < 8:
+          break
+        file_hash += struct.unpack('<Q', block)[0]
+
+      file_handle.seek(max(0, file_size - chunk_size), os.SEEK_SET)
+      for _ in range(int(chunk_size / 8)):
+        block = file_handle.read(8)
+        if len(block) < 8:
+          break
+        file_hash += struct.unpack('<Q', block)[0]
+
+    file_hash &= 0xFFFFFFFFFFFFFFFF
+    return ('%016x' % (file_hash)), file_size
+  except Exception:
+    return '', file_size
+
+def _normalize_imdb_id(value):
+  imdb_id = _as_text(value).strip()
+  if not imdb_id:
+    return ''
+  imdb_id = imdb_id.lower()
+  if imdb_id.startswith('tt') and imdb_id[2:].isdigit():
+    return imdb_id
+  digits = re.sub(r'[^0-9]', '', imdb_id)
+  if digits:
+    return 'tt%s' % (digits)
+  return ''
+
+def _current_video_metadata():
+  metadata = {
+    'imdb_id': '',
+    'title': '',
+    'tvshow_title': '',
+  }
+
+  player = xbmc.Player()
+  try:
+    if not player.isPlayingVideo():
+      return metadata
+  except Exception:
+    pass
+
+  try:
+    tag = player.getVideoInfoTag()
+  except Exception:
+    tag = None
+
+  if tag:
+    try:
+      metadata['imdb_id'] = _normalize_imdb_id(tag.getIMDBNumber())
+    except Exception:
+      pass
+    try:
+      metadata['title'] = _as_text(tag.getTitle()).strip()
+    except Exception:
+      pass
+    try:
+      metadata['tvshow_title'] = _as_text(tag.getTVShowTitle()).strip()
+    except Exception:
+      pass
+
+  if not metadata['imdb_id']:
+    try:
+      metadata['imdb_id'] = _normalize_imdb_id(xbmc.getInfoLabel('VideoPlayer.IMDBNumber'))
+    except Exception:
+      pass
+  if not metadata['title']:
+    try:
+      metadata['title'] = _as_text(xbmc.getInfoLabel('VideoPlayer.Title')).strip()
+    except Exception:
+      pass
+  if not metadata['tvshow_title']:
+    try:
+      metadata['tvshow_title'] = _as_text(xbmc.getInfoLabel('VideoPlayer.TVShowTitle')).strip()
+    except Exception:
+      pass
+
+  return metadata
+
 def _resolve_start_dir(video_dir):
   last_used = __addon__.getSetting('last_used_subtitle_dir')
   if _get_start_folder_priority() == 'last_used_first':
@@ -415,6 +670,82 @@ def _get_int_setting(setting_id, default_value, minimum_value, maximum_value):
 
 def _is_ai_translation_enabled():
   return __addon__.getSetting('enable_ai_translation') == 'true'
+
+def _is_subtitle_download_enabled():
+  return __addon__.getSetting('enable_subtitle_download') == 'true'
+
+def _is_download_auto_on_missing():
+  setting = __addon__.getSetting('download_auto_on_missing')
+  if setting == '':
+    return True
+  return setting == 'true'
+
+def _get_download_max_results():
+  return _get_int_setting('download_max_results', 12, 3, 50)
+
+def _is_opensubtitles_enabled():
+  setting = __addon__.getSetting('provider_opensubtitles_enabled')
+  if setting == '':
+    return True
+  return setting == 'true'
+
+def _is_podnadpisi_enabled():
+  setting = __addon__.getSetting('provider_podnadpisi_enabled')
+  if setting == '':
+    return True
+  return setting == 'true'
+
+def _is_subdl_enabled():
+  setting = __addon__.getSetting('provider_subdl_enabled')
+  if setting == '':
+    return False
+  return setting == 'true'
+
+def _is_bsplayer_enabled():
+  setting = __addon__.getSetting('provider_bsplayer_enabled')
+  if setting == '':
+    return False
+  return setting == 'true'
+
+def _get_opensubtitles_username():
+  return __addon__.getSetting('provider_opensubtitles_username').strip()
+
+def _get_opensubtitles_password():
+  return __addon__.getSetting('provider_opensubtitles_password').strip()
+
+def _get_opensubtitles_api_key():
+  return __addon__.getSetting('provider_opensubtitles_api_key').strip()
+
+def _get_subdl_api_key():
+  return __addon__.getSetting('provider_subdl_api_key').strip()
+
+def _build_download_provider_config():
+  return {
+    'opensubtitles': {
+      'enabled': _is_opensubtitles_enabled(),
+      'username': _get_opensubtitles_username(),
+      'password': _get_opensubtitles_password(),
+      'api_key': _get_opensubtitles_api_key(),
+      'timeout_seconds': DOWNLOAD_TIMEOUT_SECONDS,
+      'user_agent': 'SubtitleSuite/%s' % (__version__),
+    },
+    'podnadpisi': {
+      'enabled': _is_podnadpisi_enabled(),
+      'timeout_seconds': DOWNLOAD_TIMEOUT_SECONDS,
+      'user_agent': 'SubtitleSuite/%s' % (__version__),
+    },
+    'subdl': {
+      'enabled': _is_subdl_enabled(),
+      'api_key': _get_subdl_api_key(),
+      'timeout_seconds': DOWNLOAD_TIMEOUT_SECONDS,
+      'user_agent': 'SubtitleSuite/%s' % (__version__),
+    },
+    'bsplayer': {
+      'enabled': _is_bsplayer_enabled(),
+      'timeout_seconds': 20,
+      'user_agent': 'BSPlayer/2.x (SubtitleSuite/%s)' % (__version__),
+    },
+  }
 
 def _is_smart_sync_enabled():
   setting = __addon__.getSetting('enable_smart_sync')
@@ -1955,6 +2286,1181 @@ def _run_restore_backup_action():
     _notify(__language__(33158), NOTIFY_WARNING)
     _log('restore backup failed for %s (%s)' % (target_path, exc), LOG_WARNING)
 
+def _build_download_query(video_basename):
+  base = _as_text(video_basename).strip()
+  if not base:
+    return ''
+
+  tokens = re.findall(r'[a-z0-9]+', base.lower())
+  if len(tokens) == 0:
+    return base
+
+  ignore_tokens = set([
+    '1080p', '720p', '2160p', '480p', 'x264', 'x265', 'h264', 'h265', 'hevc', 'bluray', 'brrip',
+    'webdl', 'webrip', 'web', 'hdr', 'dv', 'aac', 'dts', 'ddp5', 'atmos', 'proper', 'repack', 'yts',
+    'yify', 'rarbg', 'am'
+  ])
+
+  filtered = []
+  for token in tokens:
+    if token in ignore_tokens:
+      continue
+    if re.match(r'^\d{3,4}p$', token):
+      continue
+    if len(token) <= 2 and not re.match(r'^\d{4}$', token):
+      continue
+    filtered.append(token)
+
+  if len(filtered) == 0:
+    filtered = tokens
+  return ' '.join(filtered[:8])
+
+def _build_download_context(video_dir, video_basename):
+  query = _build_download_query(video_basename)
+  season, episode = _extract_season_episode(video_basename)
+  metadata = _current_video_metadata()
+  video_path = _current_video_file_path()
+  file_hash, file_size = _compute_file_hash_and_size(video_path)
+  return {
+    'video_dir': video_dir,
+    'video_basename': video_basename,
+    'video_path': video_path,
+    'query': query,
+    'year': _extract_release_year(video_basename),
+    'season': season,
+    'episode': episode,
+    'is_tvshow': bool(season and episode),
+    'imdb_id': metadata.get('imdb_id', ''),
+    'title': metadata.get('title', ''),
+    'tvshow_title': metadata.get('tvshow_title', ''),
+    'file_hash': file_hash,
+    'file_size': file_size,
+  }
+
+def _tokenize_release(text):
+  tokens = re.findall(r'[a-z0-9]+', _as_text(text).lower())
+  filtered = []
+  for token in tokens:
+    if len(token) <= 1:
+      continue
+    if token in RELEASE_NOISE_TOKENS:
+      continue
+    filtered.append(token)
+  return filtered
+
+def _release_similarity_score(video_basename, release_name):
+  video_tokens = set(_tokenize_release(video_basename))
+  release_tokens = set(_tokenize_release(release_name))
+  if len(video_tokens) == 0 or len(release_tokens) == 0:
+    return 0
+  overlap = len(video_tokens.intersection(release_tokens))
+  return int(round((100.0 * overlap) / float(len(video_tokens))))
+
+def _extract_season_episode(text):
+  raw = _as_text(text)
+  if not raw:
+    return '', ''
+
+  match = re.search(r'[sS](\d{1,3})[.\-_\s]?[eE](\d{1,3})', raw)
+  if match:
+    return match.group(1).zfill(2), match.group(2).zfill(2)
+
+  match = re.search(r'\b(\d{1,2})[xX](\d{1,3})\b', raw)
+  if match:
+    return match.group(1).zfill(2), match.group(2).zfill(2)
+
+  return '', ''
+
+def _extract_release_year(text):
+  tokens = re.findall(r'\b(19\d{2}|20\d{2})\b', _as_text(text))
+  if len(tokens) == 0:
+    return ''
+  for token in tokens:
+    if token not in ['1080', '2160', '720', '480']:
+      return token
+  return tokens[0]
+
+def _normalize_release_token(token):
+  value = _as_text(token).lower().strip()
+  if not value:
+    return ''
+  if value in ['blu', 'ray', 'blu-ray']:
+    return 'bluray'
+  if value == 'web-dl':
+    return 'webdl'
+  if value in ['ddp5', 'dd5']:
+    return 'ddp'
+  if value in ['dovi', 'dolbyvision']:
+    return 'dv'
+  return value
+
+def _detect_group_value(token_set, groups):
+  for group_name in groups:
+    if len(groups[group_name].intersection(token_set)) > 0:
+      return group_name
+  return ''
+
+def _detect_source_group(token_set):
+  normalized = set([_normalize_release_token(token) for token in token_set if token])
+  if 'web' in normalized and 'dl' in normalized:
+    normalized.add('webdl')
+  if 'blu' in normalized and 'ray' in normalized:
+    normalized.add('bluray')
+  return _detect_group_value(normalized, RELEASE_SOURCE_GROUPS)
+
+def _detect_resolution(token_set):
+  for token in token_set:
+    match = re.match(r'^(2160|1080|720|576|540|480|360|240)p?$', token)
+    if match:
+      return '%sp' % (match.group(1))
+  return ''
+
+def _detect_codec(token_set):
+  normalized = set([_normalize_release_token(token) for token in token_set if token])
+  return _detect_group_value(normalized, RELEASE_CODEC_GROUPS)
+
+def _detect_hdr_profile(token_set):
+  normalized = set([_normalize_release_token(token) for token in token_set if token])
+  return _detect_group_value(normalized, RELEASE_HDR_GROUPS)
+
+def _release_title_tokens(token_set):
+  title_tokens = []
+  for token in token_set:
+    if not token or len(token) <= 1:
+      continue
+    if token in RELEASE_NOISE_TOKENS:
+      continue
+    if token in RELEASE_AUDIO_TOKENS:
+      continue
+    if token in ['web', 'webdl', 'webrip', 'bluray', 'bdrip', 'brrip', 'dvd', 'hdtv', 'hevc', 'hdr', 'dv']:
+      continue
+    if re.match(r'^(19\d{2}|20\d{2})$', token):
+      continue
+    if re.match(r'^(2160|1080|720|576|540|480|360|240)p?$', token):
+      continue
+    if re.match(r'^s\d{1,3}e\d{1,3}$', token):
+      continue
+    title_tokens.append(token)
+  return sorted(title_tokens)
+
+def _build_release_signature(text):
+  raw_tokens = re.findall(r'[a-z0-9]+', _as_text(text).lower())
+  token_set = set([_normalize_release_token(token) for token in raw_tokens if token])
+  season, episode = _extract_season_episode(text)
+  signature = {
+    'tokens': token_set,
+    'title_tokens': _release_title_tokens(token_set),
+    'source': _detect_source_group(token_set),
+    'resolution': _detect_resolution(token_set),
+    'codec': _detect_codec(token_set),
+    'hdr': _detect_hdr_profile(token_set),
+    'audio': token_set.intersection(RELEASE_AUDIO_TOKENS),
+    'year': _extract_release_year(text),
+    'season': season,
+    'episode': episode,
+  }
+  return signature
+
+def _evaluate_download_sync_likelihood(video_basename, release_name, result):
+  # Heuristic scoring inspired by a4kSubtitles matching ideas, re-implemented for this addon.
+  provider_tier = _as_text(result.get('provider_sync_tier', '')).lower()
+  if provider_tier not in ['exact', 'likely']:
+    provider_tier = ''
+
+  similarity_score = _release_similarity_score(video_basename, release_name)
+  video_signature = _build_release_signature(video_basename)
+  release_signature = _build_release_signature(release_name)
+  score = int(round(0.45 * similarity_score))
+  hard_conflict = False
+
+  if video_signature['season'] and release_signature['season']:
+    if video_signature['season'] == release_signature['season']:
+      score += 8
+    else:
+      score -= 22
+      hard_conflict = True
+  if video_signature['episode'] and release_signature['episode']:
+    if video_signature['episode'] == release_signature['episode']:
+      score += 22
+    else:
+      score -= 35
+      hard_conflict = True
+
+  if video_signature['year'] and release_signature['year']:
+    if video_signature['year'] == release_signature['year']:
+      score += 10
+    else:
+      score -= 14
+
+  if video_signature['source'] and release_signature['source']:
+    if video_signature['source'] == release_signature['source']:
+      score += 18
+    else:
+      score -= 20
+      if similarity_score < 70:
+        hard_conflict = True
+
+  if video_signature['resolution'] and release_signature['resolution']:
+    if video_signature['resolution'] == release_signature['resolution']:
+      score += 14
+    else:
+      score -= 10
+
+  if video_signature['codec'] and release_signature['codec']:
+    if video_signature['codec'] == release_signature['codec']:
+      score += 8
+    else:
+      score -= 6
+
+  if video_signature['hdr'] and release_signature['hdr']:
+    if video_signature['hdr'] == release_signature['hdr']:
+      score += 6
+    else:
+      score -= 4
+
+  audio_overlap = len(video_signature['audio'].intersection(release_signature['audio']))
+  if audio_overlap > 0:
+    score += min(6, audio_overlap * 2)
+
+  if len(video_signature['title_tokens']) > 0 and len(release_signature['title_tokens']) > 0:
+    title_ratio = difflib.SequenceMatcher(
+      None,
+      ' '.join(video_signature['title_tokens']),
+      ' '.join(release_signature['title_tokens'])
+    ).ratio()
+    score += int(round(title_ratio * 12.0))
+    if title_ratio < 0.15 and similarity_score < 35:
+      hard_conflict = True
+
+  if score < 0:
+    score = 0
+  if score > 100:
+    score = 100
+
+  if provider_tier == 'exact':
+    tier = 'exact'
+    score = max(score, 95)
+  elif score >= 88 and similarity_score >= 65 and not hard_conflict:
+    tier = 'exact'
+  elif score >= 60 and not hard_conflict:
+    tier = 'likely'
+  else:
+    tier = 'unknown'
+
+  if provider_tier == 'likely' and tier == 'unknown' and score >= 45 and not hard_conflict:
+    tier = 'likely'
+
+  return {
+    'tier': tier,
+    'score': score,
+  }
+
+def _sync_tier_badge(sync_tier):
+  if sync_tier == 'exact':
+    return '[SYNC]'
+  if sync_tier == 'likely':
+    return '[LIKELY]'
+  return '[?]'
+
+def _rank_download_results(video_basename, language_code, results):
+  ranked = []
+  target_language = _canonicalize_language_code(language_code)
+  for result in results:
+    language = _canonicalize_language_code(result.get('language', ''))
+    language_score = 100 if language == target_language else 0
+    similarity_score = _release_similarity_score(video_basename, result.get('release_name', ''))
+    provider_score = int(result.get('provider_score') or 0)
+    sync_eval = _evaluate_download_sync_likelihood(video_basename, result.get('release_name', ''), result)
+    hearing_penalty = 8 if result.get('hearing_impaired') else 0
+    rank_score = int((0.30 * similarity_score) + (0.25 * language_score) + (0.15 * provider_score) + (0.30 * sync_eval.get('score', 0))) - hearing_penalty
+    result['rank_score'] = rank_score
+    result['similarity_score'] = similarity_score
+    result['sync_score'] = int(sync_eval.get('score', 0))
+    result['sync_tier'] = sync_eval.get('tier', 'unknown')
+    result['sync_tier_rank'] = SYNC_TIER_PRIORITY.get(result['sync_tier'], 0)
+    ranked.append(result)
+
+  ranked.sort(
+    key=lambda item: (
+      -int(item.get('sync_tier_rank', 0)),
+      -int(item.get('sync_score', 0)),
+      -int(item.get('rank_score', 0)),
+      -int(item.get('similarity_score', 0)),
+      -int(item.get('provider_score', 0)),
+      _as_text(item.get('release_name', '')).lower()
+    )
+  )
+  return ranked
+
+def _download_result_menu_label(result):
+  language_code = _canonicalize_language_code(result.get('language', '')) or 'unk'
+  sync_tier = _as_text(result.get('sync_tier', 'unknown')).lower()
+  provider_label = _provider_colored_label(result)
+  rating_label = _provider_stars(result)
+  return '%s %s [B]%s[/B]  %s' % (
+    _sync_tier_icon_markup(sync_tier),
+    _language_flag_label(language_code),
+    _language_display_name(language_code),
+    '%s %s' % (provider_label, rating_label)
+  )
+
+def _sync_tier_short(sync_tier):
+  if sync_tier == 'exact':
+    return 'SYNC'
+  if sync_tier == 'likely':
+    return 'LIKELY'
+  return '?'
+
+def _release_traits_label(release_name):
+  signature = _build_release_signature(release_name)
+  traits = []
+
+  source = _as_text(signature.get('source', '')).strip()
+  if source:
+    traits.append(source.upper())
+
+  resolution = _as_text(signature.get('resolution', '')).strip()
+  if resolution:
+    traits.append(resolution)
+
+  codec = _as_text(signature.get('codec', '')).strip()
+  if codec:
+    traits.append(codec.upper())
+
+  hdr = _as_text(signature.get('hdr', '')).strip()
+  if hdr:
+    traits.append(hdr.upper())
+
+  audio = sorted(list(signature.get('audio', [])))
+  if len(audio) > 0:
+    traits.append('/'.join([token.upper() for token in audio[:2]]))
+
+  return ' '.join(traits)
+
+def _download_result_detail_label(result):
+  release_name = _as_text(result.get('release_name', '')).strip()
+  if not release_name:
+    release_name = 'subtitle'
+  sync_tier = _as_text(result.get('sync_tier', 'unknown')).lower()
+  sync_hint = _sync_tier_hint(sync_tier)
+  hi_label = ' [HI]' if result.get('hearing_impaired') else ''
+  return '[COLOR gray]%s %s[/COLOR]%s' % (sync_hint, release_name, hi_label)
+
+def _language_flag_label(language_code):
+  code = _canonicalize_language_code(language_code)
+  if not code:
+    return u'\u25A1'
+  flag = LANGUAGE_FLAG_EMOJI.get(code, '')
+  if flag:
+    return flag
+  return '[%s]' % (code.upper())
+
+def _sync_tier_icon_markup(sync_tier):
+  if sync_tier == 'exact':
+    return '[COLOR springgreen]✓[/COLOR]'
+  if sync_tier == 'likely':
+    return '[COLOR gold]≈[/COLOR]'
+  return '[COLOR gray]?[/COLOR]'
+
+def _sync_tier_hint(sync_tier):
+  if sync_tier == 'exact':
+    return u'\u2713'
+  if sync_tier == 'likely':
+    return u'\u2248'
+  return u'?'
+
+def _provider_stars(result):
+  try:
+    provider_score = int(result.get('provider_score', 0))
+  except:
+    provider_score = 0
+
+  filled = int(round(float(provider_score) / 20.0))
+  if filled < 0:
+    filled = 0
+  if filled > 5:
+    filled = 5
+  empty = 5 - filled
+  if empty < 0:
+    empty = 0
+  return '[COLOR gold]%s[/COLOR][COLOR gray]%s[/COLOR]' % ((u'\u2605' * filled), (u'\u2606' * empty))
+
+def _download_flag_icon_path(language_code):
+  code = _canonicalize_language_code(language_code) or ''
+  path = ''
+  if code:
+    path = os.path.join(__flags__, '%s.png' % (code.lower()))
+    if xbmcvfs.exists(path):
+      return path
+  fallback = os.path.join(__flags__, 'default.png')
+  if xbmcvfs.exists(fallback):
+    return fallback
+  if path:
+    return path
+  return fallback
+
+def _download_sync_icon_path(sync_tier):
+  tier = _as_text(sync_tier).lower()
+  if tier == 'exact':
+    file_name = 'exact.png'
+  elif tier == 'likely':
+    file_name = 'likely.png'
+  else:
+    file_name = 'unknown.png'
+
+  path = os.path.join(__syncicons__, file_name)
+  if xbmcvfs.exists(path):
+    return path
+
+  fallback = os.path.join(__syncicons__, 'unknown.png')
+  if xbmcvfs.exists(fallback):
+    return fallback
+  return path
+
+def _sync_tier_window_label(sync_tier):
+  tier = _as_text(sync_tier).lower()
+  if tier == 'exact':
+    return '[COLOR springgreen]Exact match[/COLOR]'
+  if tier == 'likely':
+    return '[COLOR gold]Possible match[/COLOR]'
+  return '[COLOR gray]Unknown match[/COLOR]'
+
+def _compact_release_traits_label(release_name):
+  traits = _release_traits_label(release_name)
+  if not traits:
+    return ''
+  compact = traits.replace(' ', ' · ').lower()
+  if len(compact) > 74:
+    return '%s...' % (compact[:71])
+  return compact
+
+def _build_download_window_listitem(result):
+  release_name = _as_text(result.get('release_name', '')).strip()
+  if not release_name:
+    release_name = 'subtitle'
+
+  language_code = _canonicalize_language_code(result.get('language', '')) or 'unk'
+  language_name = _language_display_name(language_code)
+  provider_line = _provider_colored_label(result)
+  stars_line = _provider_stars(result)
+  sync_tier = _as_text(result.get('sync_tier', 'unknown')).lower()
+  sync_line = _sync_tier_window_label(sync_tier)
+  hi_line = ' [COLOR gold]HI[/COLOR]' if result.get('hearing_impaired') else ''
+  extra_line = _compact_release_traits_label(release_name)
+  flag_icon = _download_flag_icon_path(language_code)
+  sync_icon = _download_sync_icon_path(sync_tier)
+
+  try:
+    item = xbmcgui.ListItem(label=release_name, label2=language_name)
+  except:
+    item = xbmcgui.ListItem(release_name)
+
+  item.setProperty('release_line', release_name)
+  item.setProperty('provider_line', '%s%s' % (provider_line, hi_line))
+  item.setProperty('stars_line', stars_line)
+  item.setProperty('sync_line', sync_line)
+  item.setProperty('language_line', language_code.upper())
+  item.setProperty('extra_line', extra_line)
+  item.setProperty('flag_icon', flag_icon)
+  item.setProperty('sync_icon', sync_icon)
+
+  try:
+    item.setArt({
+      'icon': flag_icon,
+      'thumb': sync_icon,
+    })
+  except:
+    pass
+
+  try:
+    item.setProperty('sync', 'true' if sync_tier in ['exact', 'likely'] else 'false')
+    item.setProperty('hearing_imp', 'true' if result.get('hearing_impaired') else 'false')
+  except:
+    pass
+  return item
+
+def _select_download_result_dialog_select(results, language_label):
+  option_labels = []
+  option_items = []
+  for item in results:
+    option_labels.append(_download_result_menu_label(item))
+    option_items.append(_build_download_result_listitem(item))
+
+  try:
+    return __msg_box__.select(__language__(33178) % (language_label), option_items, useDetails=True)
+  except TypeError:
+    try:
+      return __msg_box__.select(__language__(33178) % (language_label), option_items)
+    except:
+      return __msg_box__.select(__language__(33178) % (language_label), option_labels)
+  except:
+    return __msg_box__.select(__language__(33178) % (language_label), option_labels)
+
+def _select_download_result_with_custom_window(results, language_label, video_basename):
+  if DownloadPickerDialog is None:
+    return _select_download_result_dialog_select(results, language_label)
+
+  provider_names = _configured_download_provider_names()
+  providers_label = ' | '.join(provider_names)
+  dialog_items = []
+  for item in results:
+    dialog_items.append(_build_download_window_listitem(item))
+
+  try:
+    dialog = DownloadPickerDialog(
+      DOWNLOAD_PICKER_XML,
+      __cwd__,
+      'default',
+      '1080i',
+      heading=__language__(33178) % (language_label),
+      subtitle=video_basename,
+      providers=providers_label,
+      listitems=dialog_items
+    )
+    dialog.doModal()
+    selected = int(dialog.selected_index)
+    del dialog
+    if selected >= 0 and selected < len(results):
+      return selected
+    return -1
+  except Exception as exc:
+    _log('custom download picker failed, falling back to default selector (%s)' % (exc), LOG_WARNING)
+    return _select_download_result_dialog_select(results, language_label)
+
+def _build_download_result_listitem(result):
+  language_code = _canonicalize_language_code(result.get('language', '')) or 'unk'
+  label = _download_result_menu_label(result)
+  label2 = _download_result_detail_label(result)
+  try:
+    item = xbmcgui.ListItem(label=label, label2=label2)
+  except:
+    item = xbmcgui.ListItem(label)
+    try:
+      item.setLabel2(label2)
+    except:
+      pass
+
+  try:
+    provider_score = int(result.get('provider_score', 0))
+  except:
+    provider_score = 0
+  provider_rating = int(round(float(provider_score) / 20.0))
+  if provider_rating < 0:
+    provider_rating = 0
+  if provider_rating > 5:
+    provider_rating = 5
+
+  try:
+    item.setArt({
+      'icon': str(provider_rating),
+      'thumb': language_code.lower(),
+    })
+  except:
+    pass
+
+  try:
+    sync_tier = _as_text(result.get('sync_tier', '')).lower()
+    item.setProperty('sync', 'true' if sync_tier in ['exact', 'likely'] else 'false')
+    item.setProperty('hearing_imp', 'true' if result.get('hearing_impaired') else 'false')
+  except:
+    pass
+  return item
+
+def _provider_color(provider_value):
+  provider_key = _as_text(provider_value).strip().lower()
+  if provider_key in DOWNLOAD_PROVIDER_COLORS:
+    return DOWNLOAD_PROVIDER_COLORS[provider_key]
+  if provider_key in ['opensubtitles', 'open subtitles']:
+    return DOWNLOAD_PROVIDER_COLORS.get('opensubtitles', 'white')
+  if provider_key in ['podnadpisi', 'podnapisi']:
+    return DOWNLOAD_PROVIDER_COLORS.get('podnadpisi', 'white')
+  if provider_key == 'subdl':
+    return DOWNLOAD_PROVIDER_COLORS.get('subdl', 'white')
+  if provider_key in ['bsplayer', 'bs player']:
+    return DOWNLOAD_PROVIDER_COLORS.get('bsplayer', 'white')
+  return 'white'
+
+def _provider_colored_label(result):
+  provider_name = _as_text(result.get('provider', 'provider')).strip() or 'provider'
+  color = _provider_color(result.get('provider_key', provider_name))
+  return '[COLOR %s]%s[/COLOR]' % (color, provider_name)
+
+def _language_display_name(language_code):
+  code = _canonicalize_language_code(language_code) or _as_text(language_code).lower().strip()
+  if not code:
+    return __language__(33018)
+  try:
+    name = xbmc.convertLanguage(code, xbmc.ENGLISH_NAME)
+    if name and name.strip() and name.lower().strip() != code:
+      return name
+  except:
+    pass
+  return code.upper()
+
+def _sync_marker_symbol(sync_tier):
+  if sync_tier == 'exact':
+    return u'✓'
+  if sync_tier == 'likely':
+    return u'≈'
+  return u'·'
+
+def _download_result_browser_label2(result):
+  release_name = _as_text(result.get('release_name', '')).strip()
+  if not release_name:
+    release_name = 'subtitle'
+  item_name, item_ext = os.path.splitext(release_name)
+  if item_name:
+    release_display = item_name
+  else:
+    release_display = release_name
+  if item_ext:
+    ext_label = item_ext.replace('.', '').upper()
+  else:
+    ext_label = 'SRT'
+
+  sync_symbol = _sync_marker_symbol(_as_text(result.get('sync_tier', 'unknown')).lower())
+  provider_label = _provider_colored_label(result)
+  return '%s %s ([B]%s[/B]) ([B]%s[/B])' % (sync_symbol, release_display, ext_label, provider_label)
+
+def _build_download_browser_listitem(result):
+  language_code = _canonicalize_language_code(result.get('language', '')) or 'unk'
+  label = _language_display_name(language_code)
+  label2 = _download_result_browser_label2(result)
+
+  try:
+    item = xbmcgui.ListItem(label=label, label2=label2, offscreen=True)
+  except:
+    item = xbmcgui.ListItem(label)
+    try:
+      item.setLabel2(label2)
+    except:
+      pass
+
+  provider_score = int(result.get('provider_score', 0))
+  provider_rating = int(round(float(provider_score) / 20.0))
+  if provider_rating < 0:
+    provider_rating = 0
+  if provider_rating > 5:
+    provider_rating = 5
+
+  try:
+    item.setArt({
+      'icon': str(provider_rating),
+      'thumb': language_code.lower(),
+    })
+  except:
+    pass
+
+  sync_tier = _as_text(result.get('sync_tier', '')).lower()
+  sync_value = 'true' if sync_tier in ['exact', 'likely'] else 'false'
+  try:
+    item.setProperty('sync', sync_value)
+    item.setProperty('hearing_imp', 'true' if result.get('hearing_impaired') else 'false')
+  except:
+    pass
+  return item
+
+def _select_download_language():
+  options = []
+  languages = []
+
+  preferred1 = _parse_language_code('preferred_language_1')
+  preferred2 = _parse_language_code('preferred_language_2')
+
+  if preferred1:
+    options.append('%s (%s)' % (_language_label('preferred_language_1'), preferred1.upper()))
+    languages.append(preferred1)
+  if preferred2 and preferred2 != preferred1:
+    options.append('%s (%s)' % (_language_label('preferred_language_2'), preferred2.upper()))
+    languages.append(preferred2)
+
+  options.append(__language__(33197))
+  selected = __msg_box__.select(__language__(33185), options)
+  if selected is None or selected < 0:
+    return None, ''
+
+  if selected < len(languages):
+    code = languages[selected]
+    return code, code.upper()
+
+  custom_code = ''
+  try:
+    custom_code = __msg_box__.input(__language__(33196))
+  except:
+    custom_code = ''
+  normalized = _canonicalize_language_code(custom_code)
+  if not normalized:
+    _notify(__language__(33194), NOTIFY_WARNING)
+    return None, ''
+  return normalized, normalized.upper()
+
+def _notify_download_provider_warning_once(provider_name, message):
+  key = _as_text(provider_name).lower()
+  if not key:
+    return
+  if DOWNLOAD_PROVIDER_WARNING_SHOWN.get(key):
+    return
+  DOWNLOAD_PROVIDER_WARNING_SHOWN[key] = True
+  _notify(message, NOTIFY_WARNING, timeout=5000)
+
+def _configured_download_provider_names():
+  names = []
+  if _is_opensubtitles_enabled():
+    names.append('OpenSubtitles')
+  if _is_podnadpisi_enabled():
+    names.append('Podnadpisi')
+  if _is_subdl_enabled():
+    names.append('SubDL')
+  if _is_bsplayer_enabled():
+    names.append('BSPlayer')
+  return names
+
+def _download_results_cache_file():
+  return os.path.join(__profile__, 'download_results_cache.json')
+
+def _serialize_download_result_for_cache(result):
+  return {
+    'provider': _as_text(result.get('provider', '')),
+    'provider_key': _as_text(result.get('provider_key', '')).lower(),
+    'file_id': _as_text(result.get('file_id', '')),
+    'download_url': _as_text(result.get('download_url', '')),
+    'language': _as_text(result.get('language', '')),
+    'release_name': _as_text(result.get('release_name', '')),
+    'hearing_impaired': bool(result.get('hearing_impaired')),
+    'provider_score': int(result.get('provider_score', 0)),
+    'download_count': int(result.get('download_count', 0)),
+    'sync_tier': _as_text(result.get('sync_tier', 'unknown')).lower(),
+    'sync_score': int(result.get('sync_score', 0)),
+    'similarity_score': int(result.get('similarity_score', 0)),
+    'rank_score': int(result.get('rank_score', 0)),
+  }
+
+def _save_download_results_cache(payload):
+  cache_path = _download_results_cache_file()
+  try:
+    with open(cache_path, 'wb') as file_handle:
+      file_handle.write(_to_utf8_bytes(json.dumps(payload)))
+    return True
+  except Exception as exc:
+    _log('download cache write failed: %s' % (exc), LOG_WARNING)
+    return False
+
+def _load_download_results_cache(token):
+  cache_path = _download_results_cache_file()
+  if not xbmcvfs.exists(cache_path):
+    return None
+  try:
+    with open(cache_path, 'rb') as file_handle:
+      data = file_handle.read()
+    payload = json.loads(_as_text(data))
+  except Exception as exc:
+    _log('download cache read failed: %s' % (exc), LOG_WARNING)
+    return None
+
+  if not isinstance(payload, dict):
+    return None
+  if _as_text(payload.get('token', '')) != _as_text(token):
+    return None
+  return payload
+
+def _resolve_provider_for_cached_result(result):
+  provider_key = _as_text(result.get('provider_key', '')).lower()
+  if not provider_key:
+    return None
+
+  providers = get_enabled_subtitle_providers(_build_download_provider_config(), logger=_log)
+  for provider in providers:
+    if _as_text(provider.name).lower() != provider_key:
+      continue
+    try:
+      provider.validate_config()
+    except Exception:
+      return None
+    return provider
+  return None
+
+def _get_ready_download_providers():
+  if not _is_subtitle_download_enabled():
+    raise RuntimeError(__language__(33172))
+
+  providers = get_enabled_subtitle_providers(_build_download_provider_config(), logger=_log)
+  if len(providers) == 0:
+    raise RuntimeError(__language__(33173))
+
+  ready = []
+  auth_errors = 0
+  for provider in providers:
+    try:
+      provider.validate_config()
+      ready.append(provider)
+    except ProviderAuthError as exc:
+      auth_errors += 1
+      _log('download provider config invalid (%s): %s' % (provider.name, exc), LOG_WARNING)
+      _notify_download_provider_warning_once(provider.name, __language__(33224) % (_as_text(getattr(provider, 'display_name', provider.name))))
+    except Exception as exc:
+      _log('download provider validation failed (%s): %s' % (provider.name, exc), LOG_WARNING)
+
+  if len(ready) == 0:
+    if auth_errors > 0:
+      raise RuntimeError(__language__(33223))
+    raise RuntimeError(__language__(33173))
+  return ready
+
+def _search_download_results(context, language_code):
+  providers = _get_ready_download_providers()
+  max_results = _get_download_max_results()
+
+  aggregated = []
+  auth_failures = 0
+  request_failures = 0
+
+  for provider in providers:
+    try:
+      results = provider.search(context, language_code, max_results)
+      _log(
+        'download provider results (%s): %d' % (
+          _as_text(getattr(provider, 'display_name', provider.name)),
+          len(results)
+        ),
+        LOG_INFO
+      )
+      for item in results:
+        aggregated.append(item)
+    except ProviderAuthError as exc:
+      auth_failures += 1
+      _log('download provider auth failed (%s): %s' % (provider.name, exc), LOG_WARNING)
+      _notify_download_provider_warning_once(provider.name, __language__(33224) % (_as_text(getattr(provider, 'display_name', provider.name))))
+    except ProviderRequestError as exc:
+      request_failures += 1
+      _log('download provider request failed (%s): %s' % (provider.name, exc), LOG_WARNING)
+    except Exception as exc:
+      request_failures += 1
+      _log('download provider unexpected failure (%s): %s' % (provider.name, exc), LOG_WARNING)
+
+  if len(aggregated) == 0:
+    if auth_failures > 0 and auth_failures == len(providers):
+      raise RuntimeError(__language__(33181))
+    if request_failures > 0 and request_failures == len(providers):
+      raise RuntimeError(__language__(33182))
+    return []
+
+  deduped = []
+  seen = {}
+  for item in aggregated:
+    key = '%s:%s' % (_as_text(item.get('provider_key', 'provider')).lower(), _as_text(item.get('file_id', '')))
+    if key in seen:
+      continue
+    seen[key] = True
+    deduped.append(item)
+
+  return _rank_download_results(context.get('video_basename', ''), language_code, deduped)[:max_results]
+
+def _write_download_payload_to_target(context, language_code, selected_result):
+  provider = selected_result.get('_provider_ref')
+  if provider is None:
+    provider = _resolve_provider_for_cached_result(selected_result)
+  if provider is None:
+    raise RuntimeError(__language__(33193))
+
+  payload = provider.download(selected_result)
+  data = payload.get('content_bytes')
+  if data is None:
+    raise RuntimeError(__language__(33193))
+  if not isinstance(data, bytes):
+    data = _to_utf8_bytes(data)
+
+  temp_subtitle = os.path.join(__temp__, '%s.srt' % (str(uuid.uuid4())))
+  try:
+    with open(temp_subtitle, 'wb') as file_handle:
+      file_handle.write(data)
+  except Exception as exc:
+    _log('download temp write failed: %s' % (exc), LOG_WARNING)
+    raise RuntimeError(__language__(33193))
+
+  target_language = _canonicalize_language_code(language_code) or language_code.lower()
+  target_path = os.path.join(context['video_dir'], '%s.%s.srt' % (context['video_basename'], target_language))
+  try:
+    _replace_file_with_dualsubs_backup(temp_subtitle, target_path, backup_existing=True)
+    return target_path
+  except Exception as exc:
+    _log('download target write failed: path=%s error=%s' % (target_path, exc), LOG_WARNING)
+    raise RuntimeError(__language__(33180))
+  finally:
+    try:
+      if xbmcvfs.exists(temp_subtitle):
+        xbmcvfs.delete(temp_subtitle)
+    except:
+      pass
+
+def _notify_top_download_candidate(results):
+  if len(results) == 0:
+    return
+  top_result = results[0]
+  top_tier = _as_text(top_result.get('sync_tier', 'unknown')).lower()
+  top_release = _as_text(top_result.get('release_name', 'subtitle'))
+  if top_tier == 'exact':
+    _notify(__language__(33225) % (top_release), NOTIFY_INFO, timeout=3500)
+  elif top_tier == 'likely':
+    _notify(__language__(33226) % (top_release), NOTIFY_INFO, timeout=3500)
+  _log(
+    'download candidate top: tier=%s sync_score=%s rank=%s release=%s provider=%s' % (
+      top_tier or 'unknown',
+      int(top_result.get('sync_score', 0)),
+      int(top_result.get('rank_score', 0)),
+      top_release,
+      _as_text(top_result.get('provider', 'provider'))
+    ),
+    LOG_INFO
+  )
+
+def _run_download_for_language(video_dir, video_basename, language_code, language_label=''):
+  if not video_dir or not video_basename:
+    _notify(__language__(33175), NOTIFY_WARNING)
+    return None
+
+  context = _build_download_context(video_dir, video_basename)
+  if not language_label:
+    language_label = (language_code or '').upper()
+
+  progress = xbmcgui.DialogProgress()
+  try:
+    search_line = __language__(33187) % (language_label)
+    progress.create(__scriptname__, search_line)
+    provider_names = _configured_download_provider_names()
+    if len(provider_names) > 0:
+      _progress_update(progress, 5, search_line, __language__(33227) % (' | '.join(provider_names)))
+    results = _search_download_results(context, language_code)
+  except RuntimeError as exc:
+    _close_progress(progress)
+    _notify(_as_text(exc), NOTIFY_WARNING)
+    return None
+  except Exception as exc:
+    _close_progress(progress)
+    _notify(__language__(33193), NOTIFY_WARNING)
+    _log('download search failed for %s (%s)' % (language_code, exc), LOG_WARNING)
+    return None
+
+  _close_progress(progress)
+  if len(results) == 0:
+    _notify(__language__(33177) % (language_label), NOTIFY_WARNING)
+    return None
+
+  _notify_top_download_candidate(results)
+  selected = _select_download_result_with_custom_window(results, language_label, video_basename)
+
+  if selected is None or selected < 0 or selected >= len(results):
+    return None
+
+  selected_result = results[selected]
+  progress = xbmcgui.DialogProgress()
+  try:
+    progress.create(__scriptname__, __language__(33191))
+    target_path = _write_download_payload_to_target(context, language_code, selected_result)
+  except RuntimeError as exc:
+    _close_progress(progress)
+    _notify(_as_text(exc), NOTIFY_WARNING)
+    return None
+  except Exception as exc:
+    _close_progress(progress)
+    _notify(__language__(33193), NOTIFY_WARNING)
+    _log('download write failed (%s)' % (exc), LOG_WARNING)
+    return None
+
+  _close_progress(progress)
+  _notify(__language__(33190) % (os.path.basename(target_path)), NOTIFY_INFO)
+  _log('downloaded subtitle: language=%s path=%s provider=%s' % (language_code, target_path, selected_result.get('provider')), LOG_INFO)
+  return target_path
+
+def _open_manual_download_results_browser(video_dir, video_basename, language_code, language_label):
+  context = _build_download_context(video_dir, video_basename)
+  if not language_label:
+    language_label = (language_code or '').upper()
+
+  progress = xbmcgui.DialogProgress()
+  try:
+    search_line = __language__(33187) % (language_label)
+    progress.create(__scriptname__, search_line)
+    provider_names = _configured_download_provider_names()
+    if len(provider_names) > 0:
+      _progress_update(progress, 5, search_line, __language__(33227) % (' | '.join(provider_names)))
+    results = _search_download_results(context, language_code)
+  except RuntimeError as exc:
+    _close_progress(progress)
+    _notify(_as_text(exc), NOTIFY_WARNING)
+    return
+  except Exception as exc:
+    _close_progress(progress)
+    _notify(__language__(33193), NOTIFY_WARNING)
+    _log('manual download search failed for %s (%s)' % (language_code, exc), LOG_WARNING)
+    return
+
+  _close_progress(progress)
+  if len(results) == 0:
+    _notify(__language__(33177) % (language_label), NOTIFY_WARNING)
+    return
+
+  _notify_top_download_candidate(results)
+
+  cache_token = str(uuid.uuid4())
+  cache_payload = {
+    'token': cache_token,
+    'context': {
+      'video_dir': video_dir,
+      'video_basename': video_basename,
+      'language_code': language_code,
+      'language_label': language_label,
+    },
+    'results': [_serialize_download_result_for_cache(item) for item in results],
+  }
+  if not _save_download_results_cache(cache_payload):
+    downloaded_path = _run_download_for_language(video_dir, video_basename, language_code, language_label)
+    if downloaded_path:
+      Download(downloaded_path)
+    return
+
+  handle = int(sys.argv[1])
+  for index, item in enumerate(results):
+    url = 'plugin://%s/?action=downloadpick&token=%s&index=%d' % (__scriptid__, cache_token, index)
+    listitem = _build_download_browser_listitem(item)
+    xbmcplugin.addDirectoryItem(handle=handle, url=url, listitem=listitem, isFolder=False)
+
+  try:
+    xbmcplugin.setContent(handle, 'files')
+  except:
+    pass
+
+def _run_manual_download_action():
+  if not _is_subtitle_download_enabled():
+    _notify(__language__(33172), NOTIFY_WARNING)
+    return
+
+  video_dir, video_basename = _current_video_context()
+  if not video_dir or not video_basename:
+    _notify(__language__(33175), NOTIFY_WARNING)
+    return
+
+  language_code, language_label = _select_download_language()
+  if not language_code:
+    return
+
+  downloaded_path = _run_download_for_language(video_dir, video_basename, language_code, language_label)
+  if not downloaded_path:
+    return
+  Download(downloaded_path)
+
+def _run_manual_download_pick_action():
+  token = _as_text(params.get('token', '')).strip()
+  index_raw = _as_text(params.get('index', '')).strip()
+  if not token or not index_raw:
+    _notify(__language__(33193), NOTIFY_WARNING)
+    return
+
+  try:
+    result_index = int(index_raw)
+  except:
+    _notify(__language__(33193), NOTIFY_WARNING)
+    return
+
+  cache_payload = _load_download_results_cache(token)
+  if cache_payload is None:
+    _notify(__language__(33193), NOTIFY_WARNING)
+    return
+
+  context = cache_payload.get('context') or {}
+  results = cache_payload.get('results') or []
+  if result_index < 0 or result_index >= len(results):
+    _notify(__language__(33193), NOTIFY_WARNING)
+    return
+
+  selected_result = results[result_index]
+  language_code = _canonicalize_language_code(context.get('language_code', '')) or _canonicalize_language_code(selected_result.get('language', ''))
+  if not language_code:
+    _notify(__language__(33194), NOTIFY_WARNING)
+    return
+
+  progress = xbmcgui.DialogProgress()
+  try:
+    progress.create(__scriptname__, __language__(33191))
+    target_path = _write_download_payload_to_target(context, language_code, selected_result)
+  except RuntimeError as exc:
+    _close_progress(progress)
+    _notify(_as_text(exc), NOTIFY_WARNING)
+    return
+  except Exception as exc:
+    _close_progress(progress)
+    _notify(__language__(33193), NOTIFY_WARNING)
+    _log('manual download write failed (%s)' % (exc), LOG_WARNING)
+    return
+
+  _close_progress(progress)
+  _notify(__language__(33190) % (os.path.basename(target_path)), NOTIFY_INFO)
+  _log('manual download selected: language=%s path=%s provider=%s' % (language_code, target_path, selected_result.get('provider')), LOG_INFO)
+  Download(target_path)
+
+def _refresh_automatch_mode_from_slots(automatch):
+  subtitle1 = automatch.get('subtitle1')
+  subtitle2 = automatch.get('subtitle2')
+  if subtitle1 and subtitle2 and subtitle1.lower() != subtitle2.lower():
+    automatch['mode'] = 'full'
+    automatch['missing'] = ''
+    return automatch
+  if subtitle1 and not subtitle2:
+    automatch['mode'] = 'partial'
+    automatch['missing'] = 'subtitle2'
+    automatch['found_label'] = automatch.get('language1_label', '')
+    automatch['missing_label'] = automatch.get('language2_label', '')
+    return automatch
+  if subtitle2 and not subtitle1:
+    automatch['mode'] = 'partial'
+    automatch['missing'] = 'subtitle1'
+    automatch['found_label'] = automatch.get('language2_label', '')
+    automatch['missing_label'] = automatch.get('language1_label', '')
+    return automatch
+
+  automatch['mode'] = 'none'
+  automatch['missing'] = ''
+  return automatch
+
+def _attempt_auto_download_for_automatch(automatch, video_dir, video_basename):
+  result = {
+    'applied': False,
+    'subtitle1': automatch.get('subtitle1'),
+    'subtitle2': automatch.get('subtitle2'),
+  }
+  if not _is_subtitle_download_enabled():
+    return result
+  if not _is_download_auto_on_missing():
+    return result
+  if automatch.get('mode') not in ['partial', 'none']:
+    return result
+  if not video_dir or not video_basename:
+    _notify(__language__(33175), NOTIFY_WARNING)
+    return result
+
+  targets = _build_translation_targets_for_automatch(automatch)
+  if len(targets) == 0:
+    return result
+
+  selected = __msg_box__.select(__language__(33179), [__language__(33188), __language__(33189)])
+  if selected != 1:
+    _notify(__language__(33184), NOTIFY_INFO)
+    return result
+
+  for target in targets:
+    downloaded_path = _run_download_for_language(video_dir, video_basename, target['code'], target['label'])
+    if not downloaded_path:
+      continue
+    result['applied'] = True
+    if target['slot'] == 'subtitle1':
+      result['subtitle1'] = downloaded_path
+    else:
+      result['subtitle2'] = downloaded_path
+    _notify(__language__(33183) % (target['label']), NOTIFY_INFO)
+
+  if result['applied']:
+    _notify(__language__(33195), NOTIFY_INFO)
+  return result
+
 def _match_subtitle_name(subtitle_name, video_basename, language_code, strict):
   name_lower = subtitle_name.lower()
   base_lower = video_basename.lower()
@@ -2182,6 +3688,12 @@ def _run_dual_subtitle_flow():
   smart_sync_temp_files = []
 
   automatch = _auto_match_subtitles(video_dir, video_basename)
+  download_attempt = _attempt_auto_download_for_automatch(automatch, video_dir, video_basename)
+  if download_attempt.get('applied'):
+    automatch['subtitle1'] = download_attempt.get('subtitle1')
+    automatch['subtitle2'] = download_attempt.get('subtitle2')
+    automatch = _refresh_automatch_mode_from_slots(automatch)
+
   _log('dual flow start: video_dir=%s video_basename=%s start_dir=%s automatch_mode=%s' % (video_dir, video_basename, start_dir, automatch['mode']), LOG_DEBUG)
   if automatch['mode'] == 'full':
     subtitle1 = automatch['subtitle1']
@@ -2310,6 +3822,12 @@ elif action == 'search':
 
 elif action == 'browsedual':
   _run_dual_subtitle_flow()
+
+elif action == 'downloadmanual':
+  _run_manual_download_action()
+
+elif action == 'downloadpick':
+  _run_manual_download_pick_action()
 
 elif action == 'smartsyncmanual':
   _run_manual_smart_sync_action()

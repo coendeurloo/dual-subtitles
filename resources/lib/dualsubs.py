@@ -5,9 +5,13 @@ import xbmcaddon
 import xbmcgui
 import os
 import codecs
-import chardet
 import uuid
 from json import loads, dumps
+
+try:
+  import chardet
+except Exception:
+  chardet = None
 
 try:
     translatePath = xbmcvfs.translatePath
@@ -282,14 +286,27 @@ def __charset_detect(filename, bottom):
           encoding = 'utf-8'
           __log('charset_normalizer detection failed (%s); fallback utf-8' % (ex), LOG_WARNING)
     elif encoding == 'Auto Chardet':
-      with open(filename,'rb') as fi:
-          rawdata = fi.read()
-      # see https://chardet.readthedocs.io/en/latest/supported-encodings.html
-      detected = chardet.detect(rawdata)
-      encoding = detected.get('encoding')
-      if encoding:
-        if encoding.lower() == 'gb2312':  # Decoding may fail using GB2312
-            encoding = 'gbk'
+      if chardet is not None:
+        with open(filename,'rb') as fi:
+            rawdata = fi.read()
+        # see https://chardet.readthedocs.io/en/latest/supported-encodings.html
+        detected = chardet.detect(rawdata)
+        encoding = detected.get('encoding')
+        if encoding:
+          if encoding.lower() == 'gb2312':  # Decoding may fail using GB2312
+              encoding = 'gbk'
+      elif not p2:
+        try:
+          results = from_path(filename)
+          result = results.best()
+          if result is not None and result.encoding:
+            encoding = result.encoding
+          else:
+            encoding = 'utf-8'
+            __log('charset_normalizer fallback returned no encoding; fallback utf-8', LOG_WARNING)
+        except Exception as ex:
+          encoding = 'utf-8'
+          __log('charset_normalizer fallback failed (%s); fallback utf-8' % (ex), LOG_WARNING)
       else:
         encoding = 'utf-8'
         __log('chardet returned no encoding; fallback utf-8', LOG_WARNING)

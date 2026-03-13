@@ -336,6 +336,29 @@ def _estimate_global_offset(reference_points, target_points):
     return _median(refined_offsets)
 
 
+def _estimate_opening_index_offset(reference_points, target_points, max_items=180, trim_ms=8000, min_samples=60):
+    sample_count = min(max_items, len(reference_points), len(target_points))
+    if sample_count < min_samples:
+        return None
+
+    offsets = []
+    for index in range(sample_count):
+        offsets.append(float(reference_points[index]['start'] - target_points[index]['start']))
+
+    center = _median(offsets)
+    kept = [offset for offset in offsets if abs(offset - center) <= trim_ms]
+    if len(kept) < min_samples:
+        return None
+
+    opening_offset = _median(kept)
+    spread = _median([abs(offset - opening_offset) for offset in kept])
+    return {
+        'offset': float(opening_offset),
+        'spread': float(spread),
+        'count': len(kept),
+    }
+
+
 def _build_offset_knots(reference_points, target_points, global_offset):
     if not target_points:
         return [{'time': 0.0, 'offset': float(global_offset), 'count': 0}]
@@ -569,6 +592,12 @@ def sync_local(reference_subs, target_subs):
     target_points = _subtitle_points(target_subs)
 
     global_offset = _estimate_global_offset(reference_points, target_points)
+    opening_offset = _estimate_opening_index_offset(reference_points, target_points)
+    if opening_offset is not None:
+        # Prefer stable opening alignment when global overlap scan drifts to another section.
+        if abs(global_offset - opening_offset['offset']) > 90000 and opening_offset['spread'] <= 3000:
+            global_offset = opening_offset['offset']
+
     knots = _build_offset_knots(reference_points, target_points, global_offset)
     synced_subs = _apply_knots(target_subs, knots)
     synced_points = _subtitle_points(synced_subs)

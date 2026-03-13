@@ -1,6 +1,6 @@
-# Dual Subtitles - SmartSync - AI Translate
+# Subtitle Suite (Download, SmartSync, Dual Subtitle, AI Translate)
 
-Dual subtitle addon for Kodi, focused on speed and fewer clicks.
+Subtitle addon suite for Kodi, focused on speed, reliability, and fewer clicks.
 
 ## Credits
 

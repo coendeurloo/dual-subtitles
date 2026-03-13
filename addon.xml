@@ -1,7 +1,7 @@
 ﻿<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<addon id="service.subtitles.dualsubtitles"
-       name="Dual Subtitles"
-       version="2.4.0"
+<addon id="service.subtitles.subtitlesuite"
+       name="Subtitle Suite"
+       version="2.5.0"
        provider-name="coendeurloo">
   <requires>
       <import addon="script.module.pysubs2" version="0.1.0"/>
@@ -10,10 +10,11 @@
   <extension point="xbmc.subtitle.module"
              library="service.py" />
   <extension point="xbmc.addon.metadata">
-    <summary lang="en">Dual subtitle picker with smart auto-selection</summary>
-    <description lang="en">Kodi subtitle addon focused on dual subtitles only.
+    <summary lang="en">Subtitle Suite for download, dual-subtitle playback, sync, and AI translate</summary>
+    <description lang="en">Kodi subtitle suite for download, dual subtitles, SmartSync, and AI translation.
 
 The addon opens from the subtitle search screen and supports:
+- Multi-provider subtitle download with sync-likelihood ranking
 - Smart start folder selection (current video directory first)
 - Auto matching for two preferred subtitle languages
 - Manual fallback with fewer navigation steps
@@ -21,6 +22,25 @@ The addon opens from the subtitle search screen and supports:
 - Existing dual-subtitle style and timing options</description>
     <disclaimer lang="en"></disclaimer>
 	<news>
+beta 0.9 (2026-03-13)
+- Renamed add-on id from service.subtitles.dualsubtitles to service.subtitles.subtitlesuite
+- Add-on display name is now short and clean: Subtitle Suite
+- Added first-run profile settings migration from the old add-on id
+
+beta 0.8 (2026-03-13)
+- Rebranded addon name to Subtitle Suite (Download, SmartSync, Dual Subtitle, AI Translate)
+- Improved provider diagnostics in log: each provider now logs result counts per search run
+- Improved SubDL movie search using IMDb id when available and less strict query parameters
+- Added Podnadpisi retry on transient 5xx errors to reduce one-off empty runs
+- Added optional BSPlayer provider integration (disabled by default; enable in downloader settings)
+
+beta 0.7 (2026-03-13)
+- Added multi-provider subtitle download support: OpenSubtitles, Podnadpisi, and SubDL (optional API key)
+- Added sync-likelihood badges in subtitle download results: [SYNC], [LIKELY], [?]
+- Improved download ranking to prioritize likely in-sync releases using local filename heuristics
+- Added provider credential skip warnings so one misconfigured provider does not block the others
+- Provider/ranking approach inspired by a4kSubtitles ideas, implemented in DualSubtitles-native architecture
+
 beta 0.6 (2026-03-13)
 - Faster subtitle loading flow in Kodi: no AI translation prompt inside regular dual-subtitle loading
 - Added "Restore Subtitle Backup..." action in the add-on menu

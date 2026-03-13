@@ -428,6 +428,141 @@ msgid "Smart Sync saved new subtitle: %s."
 msgctxt "#33161"
 msgid "Smart Sync applied for this playback only."
 
+msgctxt "#33162"
+msgid "Search & Download Subtitles..."
+
+msgctxt "#33163"
+msgid "Subtitle Download"
+
+msgctxt "#33164"
+msgid "Enable subtitle downloader"
+
+msgctxt "#33165"
+msgid "Auto-download missing preferred subtitles"
+
+msgctxt "#33166"
+msgid "Enable OpenSubtitles provider"
+
+msgctxt "#33167"
+msgid "OpenSubtitles Username"
+
+msgctxt "#33168"
+msgid "OpenSubtitles Password"
+
+msgctxt "#33169"
+msgid "OpenSubtitles API Key"
+
+msgctxt "#33170"
+msgid "Maximum results per language"
+
+msgctxt "#33171"
+msgid "Searches enabled subtitle providers for the current video.\nDownloaded subtitles are saved next to the video and previous files are backed up to DualSubtitles."
+
+msgctxt "#33172"
+msgid "Subtitle downloader is disabled in settings."
+
+msgctxt "#33173"
+msgid "No subtitle download provider is enabled."
+
+msgctxt "#33174"
+msgid "Set OpenSubtitles username, password, and API key in settings."
+
+msgctxt "#33175"
+msgid "No active video found. Start playback first."
+
+msgctxt "#33176"
+msgid "Searching subtitles..."
+
+msgctxt "#33177"
+msgid "No subtitles found for %s."
+
+msgctxt "#33178"
+msgid "Choose subtitle to download for %s"
+
+msgctxt "#33179"
+msgid "Missing preferred subtitles detected."
+
+msgctxt "#33180"
+msgid "Downloaded subtitle could not be saved."
+
+msgctxt "#33181"
+msgid "Subtitle search failed: authentication error."
+
+msgctxt "#33182"
+msgid "Subtitle search failed: provider request error."
+
+msgctxt "#33183"
+msgid "Auto-download found subtitle for %s."
+
+msgctxt "#33184"
+msgid "Auto-download skipped."
+
+msgctxt "#33185"
+msgid "Choose language for subtitle download"
+
+msgctxt "#33186"
+msgid "Enter language code (example: en, nl, ru)"
+
+msgctxt "#33187"
+msgid "Searching %s subtitles..."
+
+msgctxt "#33188"
+msgid "Continue without download"
+
+msgctxt "#33189"
+msgid "Try download now..."
+
+msgctxt "#33190"
+msgid "Downloaded subtitle saved as %s."
+
+msgctxt "#33191"
+msgid "Downloading subtitle..."
+
+msgctxt "#33192"
+msgid "Provider: %s | score %d"
+
+msgctxt "#33193"
+msgid "Subtitle download failed."
+
+msgctxt "#33194"
+msgid "Invalid language code."
+
+msgctxt "#33195"
+msgid "Auto-download completed. Continuing dual flow."
+
+msgctxt "#33196"
+msgid "Enter language code..."
+
+msgctxt "#33197"
+msgid "Use custom language code"
+
+msgctxt "#33220"
+msgid "Enable Podnadpisi provider"
+
+msgctxt "#33221"
+msgid "Enable SubDL provider"
+
+msgctxt "#33222"
+msgid "SubDL API Key"
+
+msgctxt "#33223"
+msgid "Set credentials for at least one enabled subtitle provider."
+
+msgctxt "#33224"
+msgid "Skipping %s: credentials are incomplete."
+
+msgctxt "#33225"
+msgid "Top result looks in sync: %s"
+
+msgctxt "#33226"
+msgid "Top result is likely in sync: %s"
+
+msgctxt "#33227"
+msgid "Providers: %s"
+
+msgctxt "#33228"
+msgid "Enable BSPlayer provider"
+
 msgctxt "#32507"
 msgid "Bottom-Top"
 
@@ -438,7 +573,7 @@ msgctxt "#32509"
 msgid "Bottom-Bottom"
 
 msgctxt "#32510"
-msgid "Dual Subtitles"
+msgid "Subtitle Suite"
 
 msgctxt "#32511"
 msgid "Top/Right Subtitle"
