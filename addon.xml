@@ -1,7 +1,7 @@
 ﻿<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <addon id="service.subtitles.dualsubtitles"
        name="Dual Subtitles"
-       version="2.3.2"
+       version="2.4.0"
        provider-name="coendeurloo">
   <requires>
       <import addon="script.module.pysubs2" version="0.1.0"/>
@@ -21,6 +21,14 @@ The addon opens from the subtitle search screen and supports:
 - Existing dual-subtitle style and timing options</description>
     <disclaimer lang="en"></disclaimer>
 	<news>
+beta 0.6 (2026-03-13)
+- Faster subtitle loading flow in Kodi: no AI translation prompt inside regular dual-subtitle loading
+- Added "Restore Subtitle Backup..." action in the add-on menu
+- Unified backup behavior for Smart Sync and AI translation (backups go to the DualSubtitles folder)
+- Smart Sync now lets you choose apply mode: replace original, save as new .smartsync.srt, or playback-only
+- Improved picker filtering so generated subtitle files are hidden from translation/sync source pickers
+- Better filename language detection for tags like eng, pt-BR and zh-Hant
+
 beta 0.5.1 (2026-03-12)
 - Smart Sync is now manual-only by default; optional auto prompt mode can be enabled in settings
 - Added Smart Sync progress dialog during sync stages

@@ -168,7 +168,7 @@ msgctxt "#33058"
 msgid "AI Translation"
 
 msgctxt "#33059"
-msgid "Offer AI translation when preferred subtitles are missing"
+msgid "Enable AI translation"
 
 msgctxt "#33060"
 msgid "OpenAI API Key"
@@ -180,7 +180,7 @@ msgctxt "#33062"
 msgid "Lines per translation request"
 
 msgctxt "#33063"
-msgid "When preferred subtitles are missing, the addon can show a popup to translate from a source .srt you choose from the video folder.\nThe translated .srt is written in the same folder and may overwrite an existing translated file."
+msgid "Enable OpenAI-powered subtitle translation.\nUse 'Translate Subtitle (manual)...' from the add-on menu and choose the source .srt and target language.\nTranslated files are written next to the source subtitle with backup safety in the DualSubtitles folder."
 
 msgctxt "#33064"
 msgid "Translating subtitle with OpenAI..."
@@ -391,6 +391,42 @@ msgid "Auto prompt on mismatch"
 
 msgctxt "#33147"
 msgid "Manual only"
+
+msgctxt "#33150"
+msgid "Restore Subtitle Backup..."
+
+msgctxt "#33151"
+msgid "How should Smart Sync apply the result?"
+
+msgctxt "#33152"
+msgid "Replace original subtitle"
+
+msgctxt "#33153"
+msgid "Missing preferred language? Use 'Translate Subtitle (manual)...' to generate it."
+
+msgctxt "#33154"
+msgid "Choose subtitle to restore from backup"
+
+msgctxt "#33155"
+msgid "Save synced subtitle as new file"
+
+msgctxt "#33156"
+msgid "No backup file found for the selected subtitle."
+
+msgctxt "#33157"
+msgid "Restored backup for %s."
+
+msgctxt "#33158"
+msgid "Could not restore backup file."
+
+msgctxt "#33159"
+msgid "Use synced subtitle for this playback only"
+
+msgctxt "#33160"
+msgid "Smart Sync saved new subtitle: %s."
+
+msgctxt "#33161"
+msgid "Smart Sync applied for this playback only."
 
 msgctxt "#32507"
 msgid "Bottom-Top"

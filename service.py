@@ -11,7 +11,16 @@ import xbmcvfs
 import shutil
 
 import uuid
-import chardet
+
+try:
+  import chardet
+except Exception:
+  chardet = None
+
+try:
+  from resources.lib.charset_normalizer.api import from_bytes
+except Exception:
+  from_bytes = None
 
 try:
   from urllib.request import Request, urlopen
@@ -35,7 +44,8 @@ __scriptname__ = __addon__.getAddonInfo('name')
 __version__    = __addon__.getAddonInfo('version')
 __language__   = __addon__.getLocalizedString
 
-LANGUAGE_CODE_REGEX = re.compile(r'\(([a-z]{2})\)\s*$', re.IGNORECASE)
+LANGUAGE_CODE_REGEX = re.compile(r'\(([a-z]{2,3}(?:-[a-z0-9]{2,8})?)\)\s*$', re.IGNORECASE)
+LANGUAGE_SUFFIX_REGEX = re.compile(r'[._-]([a-z]{2,3}(?:-[a-z0-9]{2,8})?)$', re.IGNORECASE)
 LANGUAGE_TOKEN_REGEX = re.compile(r'[._\-\s\[\]\(\)]+')
 NOTIFY_INFO = getattr(xbmcgui, 'NOTIFICATION_INFO', '')
 NOTIFY_WARNING = getattr(xbmcgui, 'NOTIFICATION_WARNING', '')
@@ -52,6 +62,32 @@ KNOWN_SUBTITLE_LANGUAGE_CODES = set([
   'it', 'ja', 'kk', 'ko', 'lv', 'lt', 'mk', 'ms', 'no', 'fa', 'pl', 'pt', 'ro', 'ru', 'sr',
   'sk', 'sl', 'es', 'sv', 'ta', 'th', 'tr', 'uk', 'ur', 'vi', 'cy'
 ])
+ISO3_TO_ISO2_LANGUAGE_CODES = {
+  'afr': 'af', 'sqi': 'sq', 'alb': 'sq', 'ara': 'ar', 'hye': 'hy', 'arm': 'hy', 'aze': 'az',
+  'eus': 'eu', 'baq': 'eu', 'bel': 'be', 'ben': 'bn', 'bos': 'bs', 'bul': 'bg', 'cat': 'ca',
+  'zho': 'zh', 'chi': 'zh', 'hrv': 'hr', 'ces': 'cs', 'cze': 'cs', 'dan': 'da', 'nld': 'nl',
+  'dut': 'nl', 'eng': 'en', 'est': 'et', 'fin': 'fi', 'fra': 'fr', 'fre': 'fr', 'glg': 'gl',
+  'kat': 'ka', 'geo': 'ka', 'deu': 'de', 'ger': 'de', 'ell': 'el', 'gre': 'el', 'heb': 'he',
+  'hin': 'hi', 'hun': 'hu', 'isl': 'is', 'ice': 'is', 'ind': 'id', 'gle': 'ga', 'ita': 'it',
+  'jpn': 'ja', 'kaz': 'kk', 'kor': 'ko', 'lav': 'lv', 'lit': 'lt', 'mkd': 'mk', 'mac': 'mk',
+  'msa': 'ms', 'may': 'ms', 'nor': 'no', 'fas': 'fa', 'per': 'fa', 'pol': 'pl', 'por': 'pt',
+  'ron': 'ro', 'rum': 'ro', 'rus': 'ru', 'srp': 'sr', 'slk': 'sk', 'slo': 'sk', 'slv': 'sl',
+  'spa': 'es', 'swe': 'sv', 'tam': 'ta', 'tha': 'th', 'tur': 'tr', 'ukr': 'uk', 'urd': 'ur',
+  'vie': 'vi', 'cym': 'cy', 'wel': 'cy'
+}
+LANGUAGE_CODE_ALIASES = {
+  'af': ['afr'], 'sq': ['sqi', 'alb'], 'ar': ['ara'], 'hy': ['hye', 'arm'], 'az': ['aze'],
+  'eu': ['eus', 'baq'], 'be': ['bel'], 'bn': ['ben'], 'bs': ['bos'], 'bg': ['bul'],
+  'ca': ['cat'], 'zh': ['zho', 'chi'], 'hr': ['hrv'], 'cs': ['ces', 'cze'], 'da': ['dan'],
+  'nl': ['nld', 'dut'], 'en': ['eng'], 'et': ['est'], 'fi': ['fin'], 'fr': ['fra', 'fre'],
+  'gl': ['glg'], 'ka': ['kat', 'geo'], 'de': ['deu', 'ger'], 'el': ['ell', 'gre'],
+  'he': ['heb'], 'hi': ['hin'], 'hu': ['hun'], 'is': ['isl', 'ice'], 'id': ['ind'],
+  'ga': ['gle'], 'it': ['ita'], 'ja': ['jpn'], 'kk': ['kaz'], 'ko': ['kor'], 'lv': ['lav'],
+  'lt': ['lit'], 'mk': ['mkd', 'mac'], 'ms': ['msa', 'may'], 'no': ['nor'], 'fa': ['fas', 'per'],
+  'pl': ['pol'], 'pt': ['por'], 'ro': ['ron', 'rum'], 'ru': ['rus'], 'sr': ['srp'],
+  'sk': ['slk', 'slo'], 'sl': ['slv'], 'es': ['spa'], 'sv': ['swe'], 'ta': ['tam'],
+  'th': ['tha'], 'tr': ['tur'], 'uk': ['ukr'], 'ur': ['urd'], 'vi': ['vie'], 'cy': ['cym', 'wel']
+}
 
 try:
     translatePath = xbmcvfs.translatePath
@@ -104,6 +140,7 @@ def Search():
   AddItem(__language__(33004), "plugin://%s/?action=browsedual" % (__scriptid__))
   AddItem(__language__(33120), "plugin://%s/?action=smartsyncmanual" % (__scriptid__))
   AddItem(__language__(33121), "plugin://%s/?action=translatemanual" % (__scriptid__))
+  AddItem(__language__(33150), "plugin://%s/?action=restorebackup" % (__scriptid__))
   AddItem(__language__(33008), "plugin://%s/?action=settings" % (__scriptid__))
 
 def get_params(string=""):
@@ -269,11 +306,13 @@ def _parse_language_code(setting_id):
 
   match = LANGUAGE_CODE_REGEX.search(language_value)
   if match is not None:
-    return match.group(1).lower()
+    normalized = _canonicalize_language_code(match.group(1))
+    if normalized:
+      return normalized
 
-  language_value = language_value.strip().lower()
-  if re.match(r'^[a-z]{2}$', language_value):
-    return language_value
+  normalized = _canonicalize_language_code(language_value)
+  if normalized:
+    return normalized
 
   return None
 
@@ -301,6 +340,52 @@ def _as_text(value):
     return unicode(value)
   except:
     return str(value)
+
+def _canonicalize_language_code(language_code):
+  normalized = _as_text(language_code).strip()
+  if not normalized:
+    return ''
+
+  normalized = normalized.replace('_', '-').lower()
+  normalized = re.sub(r'\s+', '', normalized)
+  if not normalized:
+    return ''
+
+  match = re.match(r'^([a-z]{2,3})(?:-([a-z0-9]{2,8}))?$', normalized)
+  if match is None:
+    return ''
+
+  primary = match.group(1)
+  if len(primary) == 3:
+    primary = ISO3_TO_ISO2_LANGUAGE_CODES.get(primary, primary)
+
+  if not re.match(r'^[a-z]{2,3}$', primary):
+    return ''
+
+  return primary
+
+def _language_suffix_aliases(language_code):
+  canonical = _canonicalize_language_code(language_code)
+  if not canonical:
+    return []
+
+  aliases = [canonical]
+  for alias in LANGUAGE_CODE_ALIASES.get(canonical, []):
+    if alias not in aliases:
+      aliases.append(alias)
+  return aliases
+
+def _language_tail_matches(tail_lower, language_code, strict):
+  for alias in _language_suffix_aliases(language_code):
+    if strict:
+      pattern = r'^[._-]%s(?:-[a-z0-9]{2,8})?$' % (re.escape(alias))
+      if re.match(pattern, tail_lower):
+        return True
+    else:
+      pattern = r'[._-]%s(?:-[a-z0-9]{2,8})?$' % (re.escape(alias))
+      if re.search(pattern, tail_lower):
+        return True
+  return False
 
 def _to_utf8_bytes(text):
   if text is None:
@@ -483,12 +568,26 @@ def _openai_translate_lines(lines, source_language_code, target_language_code, a
   translations = payload.get('translations')
   if not isinstance(translations, list):
     raise RuntimeError('OpenAI response is missing translations.')
-  if len(translations) != len(lines):
-    raise RuntimeError('OpenAI returned %d translations for %d lines.' % (len(translations), len(lines)))
 
   normalized = []
   for item in translations:
     normalized.append(_as_text(item))
+
+  if len(normalized) != len(lines):
+    if len(normalized) == 0:
+      raise RuntimeError('OpenAI returned 0 translations for %d lines.' % (len(lines)))
+    _log(
+      'openai translation count mismatch: got=%d expected=%d; applying safe fallback for missing/extra lines'
+      % (len(normalized), len(lines)),
+      LOG_WARNING
+    )
+    if len(normalized) > len(lines):
+      normalized = normalized[:len(lines)]
+    elif len(normalized) < len(lines):
+      # Keep flow stable: if model drops items, reuse source text for missing rows.
+      for index in range(len(normalized), len(lines)):
+        normalized.append(_as_text(lines[index]))
+
   return normalized
 
 def _copy_subtitle_to_temp(source_path):
@@ -501,8 +600,15 @@ def _detect_text_encoding(local_subtitle_path):
   try:
     with open(local_subtitle_path, 'rb') as subtitle_file:
       raw_data = subtitle_file.read()
-    detected = chardet.detect(raw_data)
-    encoding = detected.get('encoding')
+    encoding = None
+    if chardet is not None:
+      detected = chardet.detect(raw_data)
+      encoding = detected.get('encoding')
+    elif from_bytes is not None:
+      results = from_bytes(raw_data)
+      best = results.best()
+      if best is not None:
+        encoding = best.encoding
     if encoding and encoding.lower() == 'gb2312':
       encoding = 'gbk'
     if encoding:
@@ -515,27 +621,37 @@ def _build_translated_subtitle_path(source_subtitle_path, target_language_code):
   source_directory = os.path.dirname(source_subtitle_path)
   source_filename = os.path.basename(source_subtitle_path)
   source_base = os.path.splitext(source_filename)[0]
+  target_code = _canonicalize_language_code(target_language_code)
+  if not target_code:
+    target_code = target_language_code.lower()
 
-  match = re.match(r'^(.*?)([._-])([a-z]{2})$', source_base, re.IGNORECASE)
+  match = re.match(r'^(.*?)([._-])([a-z]{2,3}(?:-[a-z0-9]{2,8})?)$', source_base, re.IGNORECASE)
   if match:
-    translated_base = '%s%s%s' % (match.group(1), match.group(2), target_language_code.lower())
+    translated_base = '%s%s%s' % (match.group(1), match.group(2), target_code)
   else:
-    translated_base = '%s-%s' % (source_base, target_language_code.lower())
+    translated_base = '%s-%s' % (source_base, target_code)
 
   if translated_base.lower() == source_base.lower():
-    translated_base = '%s-translated-%s' % (source_base, target_language_code.lower())
+    translated_base = '%s-translated-%s' % (source_base, target_code)
 
   return os.path.join(source_directory, '%s.srt' % (translated_base))
 
 def _guess_language_code_from_path(path):
   filename = os.path.basename(path)
   base = os.path.splitext(filename)[0]
-  match = re.search(r'[._-]([a-z]{2})$', base, re.IGNORECASE)
-  if match:
-    return match.group(1).lower()
+  suffix_match = LANGUAGE_SUFFIX_REGEX.search(base)
+  if suffix_match:
+    normalized = _canonicalize_language_code(suffix_match.group(1))
+    if normalized:
+      return normalized
+
+  for token in reversed(LANGUAGE_TOKEN_REGEX.split(base.lower())):
+    normalized = _canonicalize_language_code(token)
+    if normalized:
+      return normalized
   return 'auto'
 
-def _list_srt_files(folder_path):
+def _list_srt_files(folder_path, include_generated=True):
   if not folder_path:
     return []
 
@@ -546,8 +662,12 @@ def _list_srt_files(folder_path):
 
   candidates = []
   for file_name in file_names:
-    if file_name.lower().endswith('.srt'):
-      candidates.append(os.path.join(folder_path, file_name))
+    if not file_name.lower().endswith('.srt'):
+      continue
+    full_path = os.path.join(folder_path, file_name)
+    if not include_generated and _is_generated_subtitle_name(full_path):
+      continue
+    candidates.append(full_path)
 
   candidates.sort(key=lambda item: os.path.basename(item).lower())
   return candidates
@@ -569,20 +689,34 @@ def _build_compact_display_name(filename, max_length=72, tail_length=28):
 def _detect_language_from_filename(path):
   filename = os.path.basename(path)
   base = os.path.splitext(filename)[0].lower()
-  tokens = LANGUAGE_TOKEN_REGEX.split(base)
 
   preferred_codes = [
     _parse_language_code('preferred_language_1'),
     _parse_language_code('preferred_language_2'),
   ]
 
-  for token in reversed(tokens):
-    if len(token) != 2:
+  candidates = []
+
+  suffix_match = LANGUAGE_SUFFIX_REGEX.search(base)
+  if suffix_match:
+    candidates.append(suffix_match.group(1))
+
+  for token in reversed(LANGUAGE_TOKEN_REGEX.split(base)):
+    if token:
+      candidates.append(token)
+
+  seen = {}
+  for candidate in candidates:
+    normalized = _canonicalize_language_code(candidate)
+    if not normalized:
       continue
-    if token in preferred_codes:
-      return token
-    if token in KNOWN_SUBTITLE_LANGUAGE_CODES:
-      return token
+    if normalized in seen:
+      continue
+    seen[normalized] = True
+    if normalized in preferred_codes:
+      return normalized
+    if normalized in KNOWN_SUBTITLE_LANGUAGE_CODES:
+      return normalized
   return ''
 
 def _detect_language_from_content(path):
@@ -658,9 +792,7 @@ def _detect_language_from_content(path):
 
 def _build_subtitle_prepicker_entries(folder_path):
   entries = []
-  for path in _list_srt_files(folder_path):
-    if _is_generated_subtitle_name(path):
-      continue
+  for path in _list_srt_files(folder_path, include_generated=False):
     language_code = _detect_language_from_filename(path)
     source_rank = 1
     if not language_code:
@@ -669,8 +801,7 @@ def _build_subtitle_prepicker_entries(folder_path):
     if not language_code:
       language_code = 'unk'
 
-    display_name = _build_compact_display_name(os.path.basename(path))
-    label = '[%s] %s' % (language_code.upper(), display_name)
+    label = _subtitle_menu_label(path, compact=True)
     entries.append({
       'label': label,
       'path': path,
@@ -724,6 +855,47 @@ def _dualsubs_backup_path(target_path):
   target_name = os.path.basename(target_path)
   work_dir = _get_dualsubtitles_work_dir_for_path(target_path)
   return os.path.join(work_dir, '%s.bak' % (target_name))
+
+def _replace_file_with_dualsubs_backup(source_path, target_path, backup_existing=True):
+  had_existing = False
+  backup_path = ''
+  try:
+    had_existing = xbmcvfs.exists(target_path)
+  except:
+    had_existing = False
+
+  if backup_existing and had_existing:
+    backup_path = _dualsubs_backup_path(target_path)
+    if xbmcvfs.exists(backup_path):
+      xbmcvfs.delete(backup_path)
+    if not xbmcvfs.copy(target_path, backup_path):
+      raise RuntimeError('backup copy failed')
+    _set_writable_permissions(backup_path, is_directory=False)
+
+  if xbmcvfs.exists(target_path):
+    xbmcvfs.delete(target_path)
+
+  if not xbmcvfs.copy(source_path, target_path):
+    if backup_path and not xbmcvfs.exists(target_path):
+      try:
+        xbmcvfs.copy(backup_path, target_path)
+      except:
+        pass
+    raise RuntimeError('target write failed')
+
+  _set_writable_permissions(target_path, is_directory=False)
+  return {
+    'target_path': target_path,
+    'backup_path': backup_path,
+    'had_existing': had_existing,
+  }
+
+def _build_smartsync_saved_output_path(target_path):
+  directory = os.path.dirname(target_path)
+  base = os.path.splitext(os.path.basename(target_path))[0]
+  if base.lower().endswith('.smartsync'):
+    base = '%s-%s' % (base, str(uuid.uuid4())[:8])
+  return os.path.join(directory, '%s.smartsync.srt' % (base))
 
 def _move_file_to_dualsubtitles_folder(path):
   if not path:
@@ -804,20 +976,30 @@ def _is_generated_subtitle_name(path):
   name = os.path.basename(path).lower()
   if name.endswith('.srt.bak'):
     return True
+  if name.endswith('.ass.bak'):
+    return True
   if '..srt' in name:
+    return True
+  if '..ass' in name:
     return True
   if '-translated-' in name:
     return True
+  if '.translated.' in name:
+    return True
   if 'smartsync-' in name:
+    return True
+  if '.smartsync.' in name:
+    return True
+  if name.endswith('.dual.srt'):
     return True
   return False
 
 def _select_translation_source_subtitle(video_dir, fallback_dir=''):
   source_dir = video_dir
-  candidates = _list_srt_files(source_dir)
+  candidates = _list_srt_files(source_dir, include_generated=False)
   if len(candidates) == 0 and fallback_dir and fallback_dir != video_dir:
     source_dir = fallback_dir
-    candidates = _list_srt_files(source_dir)
+    candidates = _list_srt_files(source_dir, include_generated=False)
 
   if len(candidates) == 0:
     _notify(__language__(33077), NOTIFY_WARNING)
@@ -826,7 +1008,7 @@ def _select_translation_source_subtitle(video_dir, fallback_dir=''):
 
   labels = []
   for path in candidates:
-    labels.append(os.path.basename(path))
+    labels.append(_subtitle_menu_label(path))
 
   selected = __msg_box__.select(__language__(33078), labels)
   if selected is None or selected < 0:
@@ -855,6 +1037,19 @@ def _safe_basename(path):
     return os.path.basename(path)
   except:
     return path
+
+def _subtitle_menu_label(path, compact=False):
+  display_name = _safe_basename(path)
+  if compact:
+    display_name = _build_compact_display_name(display_name)
+
+  language_code = _detect_language_from_filename(path)
+  if not language_code:
+    language_code = _detect_language_from_content(path)
+  if not language_code:
+    language_code = 'unk'
+
+  return '[%s] %s' % (language_code.upper(), display_name)
 
 def _load_subtitle_for_processing(subtitle_path):
   pysubs2 = _load_pysubs2()
@@ -885,16 +1080,16 @@ def _collect_smart_sync_reference_candidates(excluded_paths, subtitle1, subtitle
 
   selected_candidates = []
   if subtitle1 and subtitle1.lower() not in excluded:
-    selected_candidates.append((__language__(33093) % (_safe_basename(subtitle1)), subtitle1))
+    selected_candidates.append((__language__(33093) % (_subtitle_menu_label(subtitle1)), subtitle1))
   if subtitle2 and subtitle2.lower() not in excluded:
-    selected_candidates.append((__language__(33093) % (_safe_basename(subtitle2)), subtitle2))
+    selected_candidates.append((__language__(33093) % (_subtitle_menu_label(subtitle2)), subtitle2))
 
   folder_candidates = []
   for candidate_dir in _unique_paths([video_dir, start_dir]):
-    for path in _list_srt_files(candidate_dir):
+    for path in _list_srt_files(candidate_dir, include_generated=False):
       if path.lower() in excluded:
         continue
-      folder_candidates.append((__language__(33094) % (_safe_basename(path)), path))
+      folder_candidates.append((__language__(33094) % (_subtitle_menu_label(path)), path))
 
   merged = []
   for label, path in selected_candidates + folder_candidates:
@@ -944,9 +1139,9 @@ def _select_smart_sync_target_for_dual(reference_path, subtitle1, subtitle2):
   option_labels = []
   for slot, path in candidates:
     if slot == 'subtitle1':
-      option_labels.append(__language__(33091) % (_safe_basename(path)))
+      option_labels.append(__language__(33091) % (_subtitle_menu_label(path)))
     else:
-      option_labels.append(__language__(33092) % (_safe_basename(path)))
+      option_labels.append(__language__(33092) % (_subtitle_menu_label(path)))
 
   selected = __msg_box__.select(__language__(33090), option_labels)
   if selected is None or selected < 0:
@@ -1110,7 +1305,23 @@ def _run_smart_sync_ai(reference_path, target_path):
     if target_local:
       xbmcvfs.delete(target_local)
 
-def _run_smart_sync_pipeline(reference_path, target_path):
+def _select_smart_sync_apply_mode():
+  options = [
+    __language__(33152),
+    __language__(33155),
+    __language__(33159),
+    __language__(33112),
+  ]
+  selected = __msg_box__.select(__language__(33151), options)
+  if selected == 0:
+    return 'replace'
+  if selected == 1:
+    return 'save_as_new'
+  if selected == 2:
+    return 'playback_only'
+  return 'skip'
+
+def _run_smart_sync_pipeline(reference_path, target_path, allow_ai_fallback=True):
   result = {
     'applied': False,
     'play_path': target_path,
@@ -1133,37 +1344,59 @@ def _run_smart_sync_pipeline(reference_path, target_path):
   chosen_result = local_result
   if local_result.get('low_confidence'):
     low_conf_title = __language__(33099) % (_smart_sync_confidence_percent(local_result), local_result.get('median_error_ms', 0))
-    low_conf_choice = __msg_box__.select(low_conf_title, [__language__(33110), __language__(33111), __language__(33112)])
-    if low_conf_choice == 2 or low_conf_choice < 0:
-      _close_progress(progress)
-      _log('smart sync skipped due low confidence user choice', LOG_INFO)
-      return result
+    if allow_ai_fallback:
+      low_conf_choice = __msg_box__.select(low_conf_title, [__language__(33110), __language__(33111), __language__(33112)])
+      if low_conf_choice == 2 or low_conf_choice < 0:
+        _close_progress(progress)
+        _log('smart sync skipped due low confidence user choice', LOG_INFO)
+        return result
 
-    if low_conf_choice == 1:
-      ai_result = None
-      try:
-        _set_smart_sync_progress(progress, 62, 33137)
-        ai_result = _run_smart_sync_ai(reference_path, target_path)
-        _set_smart_sync_progress(progress, 78, 33138)
-      except Exception as exc:
-        _log('smart sync ai stage failed: %s' % (exc), LOG_WARNING)
+      if low_conf_choice == 1:
         ai_result = None
+        try:
+          _set_smart_sync_progress(progress, 62, 33137)
+          ai_result = _run_smart_sync_ai(reference_path, target_path)
+          _set_smart_sync_progress(progress, 78, 33138)
+        except Exception as exc:
+          _log('smart sync ai stage failed: %s' % (exc), LOG_WARNING)
+          ai_result = None
 
-      if ai_result is not None:
-        chosen_result = ai_result
-        _notify(__language__(33102), NOTIFY_INFO)
-      else:
-        fallback_choice = __msg_box__.select(__language__(33105), [__language__(33110), __language__(33112)])
-        if fallback_choice != 0:
-          _close_progress(progress)
-          return result
+        if ai_result is not None:
+          chosen_result = ai_result
+          _notify(__language__(33102), NOTIFY_INFO)
+        else:
+          fallback_choice = __msg_box__.select(__language__(33105), [__language__(33110), __language__(33112)])
+          if fallback_choice != 0:
+            _close_progress(progress)
+            return result
+    else:
+      low_conf_choice = __msg_box__.select(low_conf_title, [__language__(33110), __language__(33112)])
+      if low_conf_choice != 0:
+        _close_progress(progress)
+        _log('smart sync skipped due low confidence user choice (local-only mode)', LOG_INFO)
+        return result
+
+  apply_mode = _select_smart_sync_apply_mode()
+  if apply_mode == 'skip':
+    _close_progress(progress)
+    _log('smart sync skipped at apply mode selection', LOG_INFO)
+    return result
 
   _set_smart_sync_progress(progress, 88, 33139)
-  sync_apply = _apply_synced_subtitle_to_target(target_path, chosen_result['synced_subs'])
+  if apply_mode == 'replace':
+    sync_apply = _apply_synced_subtitle_to_target(target_path, chosen_result['synced_subs'])
+  elif apply_mode == 'save_as_new':
+    sync_apply = _save_synced_subtitle_as_new_file(target_path, chosen_result['synced_subs'])
+  else:
+    sync_apply = _prepare_synced_subtitle_playback_only(target_path, chosen_result['synced_subs'])
   _set_smart_sync_progress(progress, 100, 33140)
   _close_progress(progress)
   method_label = _smart_sync_method_label(chosen_result.get('method', 'local'))
-  if sync_apply['persisted']:
+  if apply_mode == 'playback_only':
+    _notify(__language__(33161), NOTIFY_INFO)
+  elif apply_mode == 'save_as_new' and sync_apply['persisted']:
+    _notify(__language__(33160) % (os.path.basename(sync_apply.get('play_path', ''))), NOTIFY_INFO)
+  elif sync_apply['persisted']:
     _notify(__language__(33108) % (method_label), NOTIFY_INFO)
   else:
     _notify(__language__(33113), NOTIFY_WARNING)
@@ -1182,29 +1415,14 @@ def _apply_synced_subtitle_to_target(target_path, synced_subs):
     synced_temp = work_synced_temp
     _set_writable_permissions(work_synced_temp, is_directory=False)
     xbmcvfs.delete(local_synced_temp)
-  backup_path = _dualsubs_backup_path(target_path)
-
   try:
-    if xbmcvfs.exists(backup_path):
-      xbmcvfs.delete(backup_path)
-    if not xbmcvfs.copy(target_path, backup_path):
-      raise RuntimeError('backup copy failed')
-    _set_writable_permissions(backup_path, is_directory=False)
-
-    if not xbmcvfs.copy(synced_temp, target_path):
-      try:
-        if not xbmcvfs.exists(target_path):
-          xbmcvfs.copy(backup_path, target_path)
-      except:
-        pass
-      raise RuntimeError('target write failed')
-
+    write_result = _replace_file_with_dualsubs_backup(synced_temp, target_path, backup_existing=True)
     xbmcvfs.delete(synced_temp)
     return {
       'play_path': target_path,
       'persisted': True,
       'temp_path': '',
-      'backup_path': backup_path,
+      'backup_path': write_result.get('backup_path', ''),
     }
   except Exception as exc:
     _log('smart sync persist failed for %s (%s)' % (target_path, exc), LOG_WARNING)
@@ -1212,8 +1430,48 @@ def _apply_synced_subtitle_to_target(target_path, synced_subs):
       'play_path': synced_temp,
       'persisted': False,
       'temp_path': synced_temp,
-      'backup_path': backup_path,
+      'backup_path': _dualsubs_backup_path(target_path),
     }
+
+def _save_synced_subtitle_as_new_file(target_path, synced_subs):
+  output_path = _build_smartsync_saved_output_path(target_path)
+  local_synced_temp = _save_subtitle_to_temp(synced_subs)
+  try:
+    write_result = _replace_file_with_dualsubs_backup(local_synced_temp, output_path, backup_existing=True)
+    xbmcvfs.delete(local_synced_temp)
+    return {
+      'play_path': output_path,
+      'persisted': True,
+      'temp_path': '',
+      'backup_path': write_result.get('backup_path', ''),
+    }
+  except Exception as exc:
+    _log('smart sync save-as-new failed for %s (%s)' % (output_path, exc), LOG_WARNING)
+    return {
+      'play_path': local_synced_temp,
+      'persisted': False,
+      'temp_path': local_synced_temp,
+      'backup_path': '',
+    }
+
+def _prepare_synced_subtitle_playback_only(target_path, synced_subs):
+  local_synced_temp = _save_subtitle_to_temp(synced_subs)
+  playback_temp = _dualsubs_work_temp_path(target_path, '.srt')
+  if xbmcvfs.copy(local_synced_temp, playback_temp):
+    _set_writable_permissions(playback_temp, is_directory=False)
+    xbmcvfs.delete(local_synced_temp)
+    return {
+      'play_path': playback_temp,
+      'persisted': False,
+      'temp_path': playback_temp,
+      'backup_path': '',
+    }
+  return {
+    'play_path': local_synced_temp,
+    'persisted': False,
+    'temp_path': local_synced_temp,
+    'backup_path': '',
+  }
 
 def _smart_sync_confidence_percent(sync_result):
   confidence = sync_result.get('confidence', 0.0)
@@ -1291,7 +1549,7 @@ def _maybe_run_smart_sync(subtitle1, subtitle2, video_dir, start_dir):
   applied_count = 0
 
   for path_to_sync in target_paths:
-    sync_apply = _run_smart_sync_pipeline(reference_path, path_to_sync)
+    sync_apply = _run_smart_sync_pipeline(reference_path, path_to_sync, allow_ai_fallback=False)
     if not sync_apply.get('applied'):
       continue
 
@@ -1439,9 +1697,10 @@ def _translate_subtitle_file(source_subtitle_path, source_language_code, target_
     subtitle_data.save(temp_output, encoding='utf-8', format_='srt')
 
     translated_path = _build_translated_subtitle_path(source_subtitle_path, target_language_code)
-    if xbmcvfs.exists(translated_path):
-      xbmcvfs.delete(translated_path)
-    if not xbmcvfs.copy(temp_output, translated_path):
+    try:
+      _replace_file_with_dualsubs_backup(temp_output, translated_path, backup_existing=True)
+    except Exception as write_exc:
+      _log('ai translation write failed for %s (%s)' % (translated_path, write_exc), LOG_WARNING)
       raise RuntimeError(__language__(33071))
 
     _log('ai translation wrote subtitle=%s model=%s' % (translated_path, model), LOG_INFO)
@@ -1659,10 +1918,46 @@ def _run_manual_translation_action():
   for _, translated_path in created:
     Download(translated_path)
 
+def _notify_manual_translation_hint():
+  if not _is_ai_translation_enabled():
+    return
+  if not _get_openai_api_key():
+    return
+  _notify(__language__(33153), NOTIFY_INFO, timeout=5000)
+
+def _run_restore_backup_action():
+  video_dir, _ = _current_video_context()
+  start_dir = _resolve_start_dir(video_dir)
+  base_dir = video_dir or start_dir
+
+  target_path, _ = _browse_for_subtitle(__language__(33154), base_dir)
+  if target_path is None:
+    return
+  if not target_path.lower().endswith('.srt') or target_path.startswith(__temp__):
+    _notify(__language__(33123), NOTIFY_WARNING)
+    return
+
+  backup_path = _dualsubs_backup_path(target_path)
+  if not xbmcvfs.exists(backup_path):
+    _notify(__language__(33156), NOTIFY_WARNING)
+    _log('restore backup failed: no backup found for %s' % (target_path), LOG_WARNING)
+    return
+
+  try:
+    if xbmcvfs.exists(target_path):
+      xbmcvfs.delete(target_path)
+    if not xbmcvfs.copy(backup_path, target_path):
+      raise RuntimeError('restore copy failed')
+    _set_writable_permissions(target_path, is_directory=False)
+    _notify(__language__(33157) % (os.path.basename(target_path)), NOTIFY_INFO)
+    _log('restored backup: target=%s backup=%s' % (target_path, backup_path), LOG_INFO)
+  except Exception as exc:
+    _notify(__language__(33158), NOTIFY_WARNING)
+    _log('restore backup failed for %s (%s)' % (target_path, exc), LOG_WARNING)
+
 def _match_subtitle_name(subtitle_name, video_basename, language_code, strict):
   name_lower = subtitle_name.lower()
   base_lower = video_basename.lower()
-  lang_lower = language_code.lower()
 
   if not name_lower.endswith('.srt'):
     return False
@@ -1680,14 +1975,7 @@ def _match_subtitle_name(subtitle_name, video_basename, language_code, strict):
     return False
 
   tail_lower = tail.lower()
-  suffixes = ['.%s' % (lang_lower), '-%s' % (lang_lower), '_%s' % (lang_lower)]
-  if strict:
-    return tail_lower in suffixes
-
-  for suffix in suffixes:
-    if tail_lower.endswith(suffix):
-      return True
-  return False
+  return _language_tail_matches(tail_lower, language_code, strict)
 
 def _find_subtitle_matches(video_dir, video_basename, language_code, strict):
   if not video_dir or not video_basename or not language_code:
@@ -1895,37 +2183,45 @@ def _run_dual_subtitle_flow():
 
   automatch = _auto_match_subtitles(video_dir, video_basename)
   _log('dual flow start: video_dir=%s video_basename=%s start_dir=%s automatch_mode=%s' % (video_dir, video_basename, start_dir, automatch['mode']), LOG_DEBUG)
-  translation_applied = False
-  translation_plan = _prompt_ai_translation_plan(automatch, video_dir, start_dir)
-  translation_result = _run_ai_translation_plan(translation_plan, automatch)
-  if translation_result['status'] == 'success':
-    subtitle1 = translation_result['subtitle1']
-    subtitle2 = translation_result['subtitle2']
-    if subtitle1 is not None:
-      subtitle1_dir = os.path.dirname(subtitle1)
-    elif subtitle2 is not None:
-      subtitle1 = subtitle2
-      subtitle2 = None
-      subtitle1_dir = os.path.dirname(subtitle1)
-    translation_applied = subtitle1 is not None
-    _log('ai translation applied: subtitle1=%s subtitle2=%s' % (subtitle1, subtitle2), LOG_INFO)
+  if automatch['mode'] == 'full':
+    subtitle1 = automatch['subtitle1']
+    subtitle2 = automatch['subtitle2']
+    subtitle1_dir = os.path.dirname(subtitle1)
+    _notify(__language__(33035) % (automatch['language1_label'], automatch['language2_label']), NOTIFY_INFO)
 
-  if not translation_applied:
-    if automatch['mode'] == 'full':
-      subtitle1 = automatch['subtitle1']
-      subtitle2 = automatch['subtitle2']
-      subtitle1_dir = os.path.dirname(subtitle1)
-      _notify(__language__(33035) % (automatch['language1_label'], automatch['language2_label']), NOTIFY_INFO)
+  elif automatch['mode'] == 'partial':
+    _notify(__language__(33036) % (automatch['found_label'], automatch['missing_label']), NOTIFY_WARNING)
+    _notify_manual_translation_hint()
+    partial_behavior = _get_partial_match_behavior()
 
-    elif automatch['mode'] == 'partial':
-      _notify(__language__(33036) % (automatch['found_label'], automatch['missing_label']), NOTIFY_WARNING)
-      partial_behavior = _get_partial_match_behavior()
+    if partial_behavior == 'manual_both':
+      _notify(__language__(33044), NOTIFY_INFO)
+      force_manual_both = True
 
-      if partial_behavior == 'manual_both':
-        _notify(__language__(33044), NOTIFY_INFO)
-        force_manual_both = True
+    elif partial_behavior == 'auto_use':
+      if automatch['missing'] == 'subtitle2':
+        subtitle1 = automatch['subtitle1']
+        subtitle1_dir = os.path.dirname(subtitle1)
+        title2 = __language__(33006) + ' ' + __language__(33009)
+        subtitle2, _ = _browse_for_subtitle(title2, subtitle1_dir)
+        if subtitle2 is None and _is_second_subtitle_required():
+          _notify(__language__(33040), NOTIFY_WARNING)
+          return
+      else:
+        subtitle2 = automatch['subtitle2']
+        browse_dir = os.path.dirname(subtitle2)
+        subtitle1, subtitle1_dir = _browse_for_subtitle(__language__(33005), browse_dir)
+        if subtitle1 is None:
+          if _is_second_subtitle_required():
+            _notify(__language__(33040), NOTIFY_WARNING)
+            return
+          subtitle1 = subtitle2
+          subtitle2 = None
+          subtitle1_dir = browse_dir
 
-      elif partial_behavior == 'auto_use':
+    else:
+      message = __language__(33014) % (automatch['found_label'], automatch['missing_label'])
+      if __msg_box__.yesno(__scriptname__, message):
         if automatch['missing'] == 'subtitle2':
           subtitle1 = automatch['subtitle1']
           subtitle1_dir = os.path.dirname(subtitle1)
@@ -1945,38 +2241,16 @@ def _run_dual_subtitle_flow():
             subtitle1 = subtitle2
             subtitle2 = None
             subtitle1_dir = browse_dir
-
       else:
-        message = __language__(33014) % (automatch['found_label'], automatch['missing_label'])
-        if __msg_box__.yesno(__scriptname__, message):
-          if automatch['missing'] == 'subtitle2':
-            subtitle1 = automatch['subtitle1']
-            subtitle1_dir = os.path.dirname(subtitle1)
-            title2 = __language__(33006) + ' ' + __language__(33009)
-            subtitle2, _ = _browse_for_subtitle(title2, subtitle1_dir)
-            if subtitle2 is None and _is_second_subtitle_required():
-              _notify(__language__(33040), NOTIFY_WARNING)
-              return
-          else:
-            subtitle2 = automatch['subtitle2']
-            browse_dir = os.path.dirname(subtitle2)
-            subtitle1, subtitle1_dir = _browse_for_subtitle(__language__(33005), browse_dir)
-            if subtitle1 is None:
-              if _is_second_subtitle_required():
-                _notify(__language__(33040), NOTIFY_WARNING)
-                return
-              subtitle1 = subtitle2
-              subtitle2 = None
-              subtitle1_dir = browse_dir
-        else:
-          _notify(__language__(33044), NOTIFY_INFO)
-          force_manual_both = True
+        _notify(__language__(33044), NOTIFY_INFO)
+        force_manual_both = True
 
-    elif automatch['mode'] == 'ambiguous':
-      _notify(__language__(33038), NOTIFY_WARNING)
+  elif automatch['mode'] == 'ambiguous':
+    _notify(__language__(33038), NOTIFY_WARNING)
 
-    elif automatch['mode'] == 'none':
-      _notify(__language__(33037), NOTIFY_WARNING)
+  elif automatch['mode'] == 'none':
+    _notify(__language__(33037), NOTIFY_WARNING)
+    _notify_manual_translation_hint()
 
   apply_no_match_behavior = automatch['mode'] == 'none'
   if subtitle1 is None and subtitle2 is None:
@@ -2042,6 +2316,9 @@ elif action == 'smartsyncmanual':
 
 elif action == 'translatemanual':
   _run_manual_translation_action()
+
+elif action == 'restorebackup':
+  _run_restore_backup_action()
 
 elif action == 'settings':
   __addon__.openSettings()
