@@ -563,6 +563,222 @@ msgid "Providers: %s"
 msgctxt "#33228"
 msgid "Enable BSPlayer provider"
 
+msgctxt "#33229"
+msgid "I Feel Lucky..."
+
+msgctxt "#33230"
+msgid "I Feel Lucky"
+
+msgctxt "#33274"
+msgid "I Feel Lucky (Single Subtitle)..."
+
+msgctxt "#33275"
+msgid "I Feel Lucky (Dual Subtitles)..."
+
+msgctxt "#33276"
+msgid "Single subtitle target language"
+
+msgctxt "#33277"
+msgid "Single subtitle mode"
+
+msgctxt "#33278"
+msgid "Used by 'I Feel Lucky (Single Subtitle)...'.\nIf disabled, it falls back to Preferred Language 1."
+
+msgctxt "#33231"
+msgid "Auto-download missing subtitles"
+
+msgctxt "#33232"
+msgid "Auto Smart Sync with English reference"
+
+msgctxt "#33233"
+msgid "Allow likely English reference"
+
+msgctxt "#33234"
+msgid "Auto AI translate missing subtitles"
+
+msgctxt "#33235"
+msgid "Continue with one subtitle on partial result (legacy)"
+
+msgctxt "#33236"
+msgid "I Feel Lucky is running..."
+
+msgctxt "#33238"
+msgid "I Feel Lucky completed: dual subtitles ready."
+
+msgctxt "#33239"
+msgid "I Feel Lucky completed with one subtitle. Missing: %s."
+
+msgctxt "#33240"
+msgid "Set two different preferred languages to use I Feel Lucky."
+
+msgctxt "#33241"
+msgid "I Feel Lucky could not prepare playable subtitles."
+
+msgctxt "#33242"
+msgid "I Feel Lucky downloaded %s."
+
+msgctxt "#33243"
+msgid "I Feel Lucky translated %s from %s."
+
+msgctxt "#33244"
+msgid "I Feel Lucky SmartSync applied for %s."
+
+msgctxt "#33245"
+msgid "I Feel Lucky found an English reference (%s)."
+
+msgctxt "#33246"
+msgid "I Feel Lucky could not find an English reference."
+
+msgctxt "#33247"
+msgid "I Feel Lucky could not generate %s with AI translation."
+
+msgctxt "#33248"
+msgid "Runs a one-click flow: local match, auto-download, English-reference SmartSync, then AI translation fallback."
+
+msgctxt "#33249"
+msgid "If an English reference is found, do you want a quick sync preview first?"
+
+msgctxt "#33250"
+msgid "Kodi will jump to the first spoken subtitle line (1 second early)."
+
+msgctxt "#33251"
+msgid "Preparing local matches and context..."
+
+msgctxt "#33254"
+msgid "Preview loaded. Check subtitle sync now, then press OK to continue. Playback will return to the previous position."
+
+msgctxt "#33256"
+msgid "I Feel Lucky canceled."
+
+msgctxt "#33257"
+msgid "Ask for quick English sync test"
+
+msgctxt "#33258"
+msgid "Searching strict matches for %s..."
+
+msgctxt "#33259"
+msgid "Trying fallback download for %s..."
+
+msgctxt "#33260"
+msgid "Generating missing subtitles..."
+
+msgctxt "#33261"
+msgid "Searching English reference (exact/likely)..."
+
+msgctxt "#33262"
+msgid "Applying SmartSync for %s..."
+
+msgctxt "#33263"
+msgid "Translating %s from %s..."
+
+msgctxt "#33264"
+msgid "English sync preview finished. Continuing..."
+
+msgctxt "#33265"
+msgid "Finalizing subtitles..."
+
+msgctxt "#33266"
+msgid "Launching dual subtitles..."
+
+msgctxt "#33267"
+msgid "I Feel Lucky stopped: missing required subtitles (%s) even after fallback steps."
+
+msgctxt "#33268"
+msgid "Watch the preview and choose when you are ready."
+
+msgctxt "#33269"
+msgid "Did the English subtitle look in sync?"
+
+msgctxt "#33270"
+msgid "English reference skipped after preview."
+
+msgctxt "#33271"
+msgid "In Sync"
+
+msgctxt "#33272"
+msgid "Watch the preview video and choose when you're ready."
+
+msgctxt "#33273"
+msgid "Not In Sync"
+
+msgctxt "#33279"
+msgid "Set 'Lucky: single subtitle target language' (or Preferred Language 1) first."
+
+msgctxt "#33280"
+msgid "I Feel Lucky (Single) completed: %s ready."
+
+msgctxt "#33281"
+msgid "I Feel Lucky (Single) stopped: missing required subtitle (%s) even after fallback steps."
+
+msgctxt "#33282"
+msgid "Launching single subtitle..."
+
+msgctxt "#33283"
+msgid "No reliable match found for %s."
+
+msgctxt "#33284"
+msgid "Unknown match"
+
+msgctxt "#33285"
+msgid "Provider"
+
+msgctxt "#33286"
+msgid "Try this subtitle"
+
+msgctxt "#33287"
+msgid "Skip this subtitle"
+
+msgctxt "#33288"
+msgid "Skip this language"
+
+msgctxt "#33289"
+msgid "Title mismatch with video"
+
+msgctxt "#33290"
+msgid "Year mismatch with video"
+
+msgctxt "#33291"
+msgid "Source differs from video release"
+
+msgctxt "#33292"
+msgid "Very low confidence"
+
+msgctxt "#33293"
+msgid "Low confidence"
+
+msgctxt "#33294"
+msgid "Review this risky candidate."
+
+msgctxt "#33295"
+msgid "Provider"
+
+msgctxt "#33296"
+msgid "Risk"
+
+msgctxt "#33297"
+msgid "Still missing subtitles: %s"
+
+msgctxt "#33298"
+msgid "Open manual download now"
+
+msgctxt "#33299"
+msgid "Run AI translate manually"
+
+msgctxt "#33300"
+msgid "No reliable match found for %s. Tried English-first translation fallback."
+
+msgctxt "#33301"
+msgid "No risky candidates available for %s."
+
+msgctxt "#33302"
+msgid "User selected risky candidate for %s."
+
+msgctxt "#33303"
+msgid "User skipped risky candidates for %s."
+
+msgctxt "#33304"
+msgid "Translating %s to %s using AI..."
+
 msgctxt "#32507"
 msgid "Bottom-Top"
 

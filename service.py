@@ -6,6 +6,7 @@ import sys
 import json
 import difflib
 import struct
+import time
 import xbmc
 import xbmcaddon
 import xbmcgui,xbmcplugin
@@ -47,6 +48,10 @@ try:
   from resources.lib.downloadpicker import DownloadPickerDialog
 except Exception:
   DownloadPickerDialog = None
+try:
+  from resources.lib.luckypreview import LuckyPreviewDialog
+except Exception:
+  LuckyPreviewDialog = None
 
 __addon__ = xbmcaddon.Addon()
 __author__     = __addon__.getAddonInfo('author')
@@ -249,6 +254,7 @@ if p2:
     __syncicons__ = __syncicons__.decode("utf-8")
 
 DOWNLOAD_PICKER_XML = 'DualSubtitlesDownloadPicker.xml'
+LUCKY_PREVIEW_XML = 'DualSubtitlesLuckyPreview.xml'
 
 if xbmcvfs.exists(__temp__):
   shutil.rmtree(__temp__)
@@ -278,6 +284,8 @@ def AddItem(name, url):
 
 def Search():
   AddItem(__language__(33162), "plugin://%s/?action=downloadmanual" % (__scriptid__))
+  AddItem(__language__(33274), "plugin://%s/?action=ifeelluckysingle" % (__scriptid__))
+  AddItem(__language__(33275), "plugin://%s/?action=ifeelluckydual" % (__scriptid__))
   AddItem(__language__(33004), "plugin://%s/?action=browsedual" % (__scriptid__))
   AddItem(__language__(33120), "plugin://%s/?action=smartsyncmanual" % (__scriptid__))
   AddItem(__language__(33121), "plugin://%s/?action=translatemanual" % (__scriptid__))
@@ -485,9 +493,15 @@ def _normalize_imdb_id(value):
     return ''
   imdb_id = imdb_id.lower()
   if imdb_id.startswith('tt') and imdb_id[2:].isdigit():
-    return imdb_id
+    digits = imdb_id[2:]
+    # IMDb title ids are effectively 7+ digits; reject short/non-standard ids from scrapers.
+    if len(digits) < 7 or len(digits) > 10:
+      return ''
+    return 'tt%s' % (digits)
   digits = re.sub(r'[^0-9]', '', imdb_id)
   if digits:
+    if len(digits) < 7 or len(digits) > 10:
+      return ''
     return 'tt%s' % (digits)
   return ''
 
@@ -668,6 +682,15 @@ def _get_int_setting(setting_id, default_value, minimum_value, maximum_value):
     return maximum_value
   return parsed
 
+def _get_bool_setting(setting_id, default_value=False):
+  try:
+    setting = __addon__.getSetting(setting_id)
+  except:
+    return default_value
+  if setting == '':
+    return default_value
+  return setting == 'true'
+
 def _is_ai_translation_enabled():
   return __addon__.getSetting('enable_ai_translation') == 'true'
 
@@ -752,6 +775,26 @@ def _is_smart_sync_enabled():
   if setting == '':
     return True
   return setting == 'true'
+
+def _is_lucky_download_enabled():
+  return _get_bool_setting('lucky_enable_download', True)
+
+def _is_lucky_smartsync_enabled():
+  return _get_bool_setting('lucky_enable_smartsync', True)
+
+def _is_lucky_allow_english_likely():
+  return _get_bool_setting('lucky_allow_english_likely', True)
+
+def _is_lucky_ai_translate_enabled():
+  return _get_bool_setting('lucky_enable_ai_translate', True)
+
+def _is_lucky_continue_on_partial():
+  # Legacy setting kept for backward compatibility in stored settings.
+  # I Feel Lucky flow is now strict 2-target and no longer uses this toggle.
+  return _get_bool_setting('lucky_continue_on_partial', True)
+
+def _is_lucky_prompt_english_test_enabled():
+  return _get_bool_setting('lucky_prompt_english_test', True)
 
 def _get_smart_sync_mode():
   setting = __addon__.getSetting('smart_sync_mode')
@@ -2356,6 +2399,75 @@ def _release_similarity_score(video_basename, release_name):
   overlap = len(video_tokens.intersection(release_tokens))
   return int(round((100.0 * overlap) / float(len(video_tokens))))
 
+def _unknown_match_likelihood_score(video_basename, release_name, similarity_score=0):
+  video_signature = _build_release_signature(video_basename)
+  release_signature = _build_release_signature(release_name)
+
+  video_title_tokens = set(video_signature.get('title_tokens', []))
+  release_title_tokens = set(release_signature.get('title_tokens', []))
+  overlap_count = len(video_title_tokens.intersection(release_title_tokens))
+  if len(video_title_tokens) == 0:
+    overlap_ratio = 0.0
+  else:
+    overlap_ratio = float(overlap_count) / float(len(video_title_tokens))
+
+  title_ratio = 0.0
+  if len(video_title_tokens) > 0 and len(release_title_tokens) > 0:
+    title_ratio = difflib.SequenceMatcher(
+      None,
+      ' '.join(sorted(video_title_tokens)),
+      ' '.join(sorted(release_title_tokens))
+    ).ratio()
+
+  score = int(round((55.0 * overlap_ratio) + (20.0 * title_ratio) + (0.20 * float(similarity_score or 0))))
+
+  video_year = _as_text(video_signature.get('year', '')).strip()
+  release_year = _as_text(release_signature.get('year', '')).strip()
+  if video_year and release_year:
+    if video_year == release_year:
+      score += 10
+    else:
+      score -= 12
+
+  video_source = _as_text(video_signature.get('source', '')).strip()
+  release_source = _as_text(release_signature.get('source', '')).strip()
+  if video_source and release_source:
+    if video_source == release_source:
+      score += 6
+    else:
+      score -= 4
+
+  video_resolution = _as_text(video_signature.get('resolution', '')).strip()
+  release_resolution = _as_text(release_signature.get('resolution', '')).strip()
+  if video_resolution and release_resolution:
+    if video_resolution == release_resolution:
+      score += 5
+    else:
+      score -= 2
+
+  video_codec = _as_text(video_signature.get('codec', '')).strip()
+  release_codec = _as_text(release_signature.get('codec', '')).strip()
+  if video_codec and release_codec and video_codec == release_codec:
+    score += 3
+
+  if len(video_title_tokens) >= 3 and overlap_count < 2:
+    score -= 22
+  elif len(video_title_tokens) >= 2 and overlap_count < 1:
+    score -= 18
+  elif overlap_count == 0:
+    score -= 12
+
+  if score < 0:
+    score = 0
+  if score > 100:
+    score = 100
+
+  return {
+    'score': score,
+    'title_overlap': overlap_count,
+    'title_overlap_ratio': overlap_ratio,
+  }
+
 def _extract_season_episode(text):
   raw = _as_text(text)
   if not raw:
@@ -2470,8 +2582,12 @@ def _evaluate_download_sync_likelihood(video_basename, release_name, result):
   similarity_score = _release_similarity_score(video_basename, release_name)
   video_signature = _build_release_signature(video_basename)
   release_signature = _build_release_signature(release_name)
+  video_title_tokens = set(video_signature.get('title_tokens', []))
+  release_title_tokens = set(release_signature.get('title_tokens', []))
+  title_overlap_count = len(video_title_tokens.intersection(release_title_tokens))
   score = int(round(0.45 * similarity_score))
   hard_conflict = False
+  title_strict_ok = True
 
   if video_signature['season'] and release_signature['season']:
     if video_signature['season'] == release_signature['season']:
@@ -2531,6 +2647,24 @@ def _evaluate_download_sync_likelihood(video_basename, release_name, result):
     score += int(round(title_ratio * 12.0))
     if title_ratio < 0.15 and similarity_score < 35:
       hard_conflict = True
+  else:
+    title_ratio = 0.0
+
+  if len(video_title_tokens) >= 3:
+    if title_overlap_count < 2:
+      score -= 28
+      hard_conflict = True
+      title_strict_ok = False
+  elif len(video_title_tokens) == 2:
+    if title_overlap_count < 1:
+      score -= 24
+      hard_conflict = True
+      title_strict_ok = False
+  elif len(video_title_tokens) == 1:
+    if title_overlap_count == 0:
+      score -= 20
+      hard_conflict = True
+      title_strict_ok = False
 
   if score < 0:
     score = 0
@@ -2540,19 +2674,23 @@ def _evaluate_download_sync_likelihood(video_basename, release_name, result):
   if provider_tier == 'exact':
     tier = 'exact'
     score = max(score, 95)
-  elif score >= 88 and similarity_score >= 65 and not hard_conflict:
+  elif score >= 88 and similarity_score >= 65 and not hard_conflict and title_strict_ok:
     tier = 'exact'
-  elif score >= 60 and not hard_conflict:
+  elif score >= 60 and not hard_conflict and title_strict_ok:
     tier = 'likely'
   else:
     tier = 'unknown'
 
-  if provider_tier == 'likely' and tier == 'unknown' and score >= 45 and not hard_conflict:
+  if provider_tier == 'likely' and tier == 'unknown' and score >= 45 and not hard_conflict and title_strict_ok:
     tier = 'likely'
 
   return {
     'tier': tier,
     'score': score,
+    'hard_conflict': hard_conflict,
+    'title_overlap': title_overlap_count,
+    'title_strict_ok': title_strict_ok,
+    'similarity_score': similarity_score,
   }
 
 def _sync_tier_badge(sync_tier):
@@ -2561,6 +2699,27 @@ def _sync_tier_badge(sync_tier):
   if sync_tier == 'likely':
     return '[LIKELY]'
   return '[?]'
+
+def _download_candidate_sort_key(item):
+  sync_tier = _as_text(item.get('sync_tier', 'unknown')).lower()
+  tier_rank = int(item.get('sync_tier_rank', SYNC_TIER_PRIORITY.get(sync_tier, 0)))
+  sync_score = int(item.get('sync_score', 0))
+  unknown_likelihood = int(item.get('unknown_match_likelihood', 0))
+
+  if sync_tier == 'unknown':
+    tier_score = unknown_likelihood
+  else:
+    tier_score = 200 + sync_score
+
+  return (
+    -tier_rank,
+    -tier_score,
+    -sync_score,
+    -int(item.get('rank_score', 0)),
+    -int(item.get('similarity_score', 0)),
+    -int(item.get('provider_score', 0)),
+    _as_text(item.get('release_name', '')).lower()
+  )
 
 def _rank_download_results(video_basename, language_code, results):
   ranked = []
@@ -2571,6 +2730,7 @@ def _rank_download_results(video_basename, language_code, results):
     similarity_score = _release_similarity_score(video_basename, result.get('release_name', ''))
     provider_score = int(result.get('provider_score') or 0)
     sync_eval = _evaluate_download_sync_likelihood(video_basename, result.get('release_name', ''), result)
+    unknown_eval = _unknown_match_likelihood_score(video_basename, result.get('release_name', ''), similarity_score=similarity_score)
     hearing_penalty = 8 if result.get('hearing_impaired') else 0
     rank_score = int((0.30 * similarity_score) + (0.25 * language_score) + (0.15 * provider_score) + (0.30 * sync_eval.get('score', 0))) - hearing_penalty
     result['rank_score'] = rank_score
@@ -2578,18 +2738,12 @@ def _rank_download_results(video_basename, language_code, results):
     result['sync_score'] = int(sync_eval.get('score', 0))
     result['sync_tier'] = sync_eval.get('tier', 'unknown')
     result['sync_tier_rank'] = SYNC_TIER_PRIORITY.get(result['sync_tier'], 0)
+    result['hard_conflict'] = bool(sync_eval.get('hard_conflict'))
+    result['unknown_match_likelihood'] = int(unknown_eval.get('score', 0))
+    result['unknown_title_overlap'] = int(unknown_eval.get('title_overlap', 0))
     ranked.append(result)
 
-  ranked.sort(
-    key=lambda item: (
-      -int(item.get('sync_tier_rank', 0)),
-      -int(item.get('sync_score', 0)),
-      -int(item.get('rank_score', 0)),
-      -int(item.get('similarity_score', 0)),
-      -int(item.get('provider_score', 0)),
-      _as_text(item.get('release_name', '')).lower()
-    )
-  )
+  ranked.sort(key=_download_candidate_sort_key)
   return ranked
 
 def _download_result_menu_label(result):
@@ -2687,6 +2841,11 @@ def _provider_stars(result):
 
 def _download_flag_icon_path(language_code):
   code = _canonicalize_language_code(language_code) or ''
+  alias_map = {
+    'en': 'gb',
+  }
+  if code in alias_map:
+    code = alias_map.get(code, code)
   path = ''
   if code:
     path = os.path.join(__flags__, '%s.png' % (code.lower()))
@@ -3109,6 +3268,19 @@ def _get_ready_download_providers():
 def _search_download_results(context, language_code):
   providers = _get_ready_download_providers()
   max_results = _get_download_max_results()
+  _log(
+    'download search start: language=%s query=%s imdb=%s year=%s season=%s episode=%s providers=%s'
+    % (
+      _as_text(language_code),
+      _as_text(context.get('query', '')),
+      _as_text(context.get('imdb_id', '')),
+      _as_text(context.get('year', '')),
+      _as_text(context.get('season', '')),
+      _as_text(context.get('episode', '')),
+      ', '.join([_as_text(getattr(provider, 'display_name', provider.name)) for provider in providers])
+    ),
+    LOG_INFO
+  )
 
   aggregated = []
   auth_failures = 0
@@ -3212,6 +3384,667 @@ def _notify_top_download_candidate(results):
     ),
     LOG_INFO
   )
+
+def _normalize_required_sync_tiers(required_tiers):
+  allowed = []
+  for tier in (required_tiers or []):
+    normalized = _as_text(tier).lower().strip()
+    if normalized in ['exact', 'likely', 'unknown'] and normalized not in allowed:
+      allowed.append(normalized)
+  return allowed
+
+def _build_sync_tier_candidates(results, required_tiers=None, fallback_to_top=True):
+  if not results:
+    return []
+
+  allowed = _normalize_required_sync_tiers(required_tiers)
+  if len(allowed) == 0:
+    return list(results)
+
+  filtered = []
+  for item in results:
+    if _as_text(item.get('sync_tier', 'unknown')).lower() in allowed:
+      filtered.append(item)
+
+  if len(filtered) > 0:
+    return filtered
+  if fallback_to_top:
+    return list(results)
+  return []
+
+def _is_fallback_title_compatible(video_basename, release_name):
+  video_signature = _build_release_signature(video_basename)
+  release_signature = _build_release_signature(release_name)
+  video_title_tokens = set(video_signature.get('title_tokens', []))
+  release_title_tokens = set(release_signature.get('title_tokens', []))
+
+  if len(video_title_tokens) == 0 or len(release_title_tokens) == 0:
+    return True
+
+  overlap = len(video_title_tokens.intersection(release_title_tokens))
+  if len(video_title_tokens) >= 3:
+    if overlap < 2:
+      return False
+  elif overlap < 1:
+    return False
+
+  video_year = _as_text(video_signature.get('year', '')).strip()
+  release_year = _as_text(release_signature.get('year', '')).strip()
+  if video_year and release_year and video_year != release_year:
+    return False
+
+  return True
+
+def _select_best_download_result(results, required_tiers=None, fallback_to_top=True):
+  candidates = _build_sync_tier_candidates(results, required_tiers=required_tiers, fallback_to_top=fallback_to_top)
+  if len(candidates) == 0:
+    return None
+  return candidates[0]
+
+def _is_retryable_download_error(error):
+  message = _as_text(error).lower()
+  retry_tokens = [
+    '(429)',
+    '(500)',
+    '(502)',
+    '(503)',
+    '(504)',
+    'service unavailable',
+    'temporarily unavailable',
+    'timed out',
+    'timeout',
+    'network error',
+    'connection reset',
+    'connection aborted',
+    'too many requests',
+  ]
+  for token in retry_tokens:
+    if token in message:
+      return True
+  return False
+
+def _interleave_download_candidates_by_provider(candidate_results):
+  if not candidate_results:
+    return []
+
+  grouped = {}
+  provider_order = []
+  for item in candidate_results:
+    provider_key = _as_text(item.get('provider_key') or item.get('provider') or 'provider').lower()
+    if not provider_key:
+      provider_key = 'provider'
+    if provider_key not in grouped:
+      grouped[provider_key] = []
+      provider_order.append(provider_key)
+    grouped[provider_key].append(item)
+
+  ordered = []
+  index = 0
+  while True:
+    appended = False
+    for provider_key in provider_order:
+      items = grouped.get(provider_key, [])
+      if index < len(items):
+        ordered.append(items[index])
+        appended = True
+    if not appended:
+      break
+    index += 1
+  return ordered
+
+def _download_best_result_for_language(
+  video_dir,
+  video_basename,
+  language_code,
+  language_label='',
+  required_tiers=None,
+  fallback_to_top=True,
+  notify_errors=True,
+  max_write_attempts=5,
+  request_delay_seconds=0.0,
+  max_provider_attempts=2,
+  retry_delay_seconds=0.9,
+  progress_callback=None,
+  progress_label=''
+):
+  response = {
+    'path': '',
+    'result': None,
+    'results': [],
+  }
+  if not video_dir or not video_basename or not language_code:
+    return response
+
+  context = _build_download_context(video_dir, video_basename)
+  normalized_language = _canonicalize_language_code(language_code) or _as_text(language_code).lower().strip()
+  if not normalized_language:
+    return response
+
+  if not language_label:
+    language_label = _language_display_name(normalized_language)
+
+  if request_delay_seconds and request_delay_seconds > 0:
+    try:
+      time.sleep(float(request_delay_seconds))
+    except:
+      pass
+
+  try:
+    results = _search_download_results(context, normalized_language)
+  except RuntimeError as exc:
+    if notify_errors:
+      _notify(_as_text(exc), NOTIFY_WARNING)
+    _log('lucky download search failed for %s: %s' % (normalized_language, exc), LOG_WARNING)
+    return response
+  except Exception as exc:
+    if notify_errors:
+      _notify(__language__(33193), NOTIFY_WARNING)
+    _log('lucky download search unexpected failure for %s: %s' % (normalized_language, exc), LOG_WARNING)
+    return response
+
+  response['results'] = results
+  if len(results) == 0:
+    return response
+
+  candidate_results = _build_sync_tier_candidates(results, required_tiers=required_tiers, fallback_to_top=fallback_to_top)
+  if len(candidate_results) == 0:
+    return response
+  if fallback_to_top:
+    filtered_candidates = []
+    for item in candidate_results:
+      tier = _as_text(item.get('sync_tier', 'unknown')).lower()
+      if tier != 'unknown':
+        filtered_candidates.append(item)
+        continue
+
+      unknown_likelihood = int(item.get('unknown_match_likelihood', 0))
+      if unknown_likelihood <= 0:
+        unknown_eval = _unknown_match_likelihood_score(
+          video_basename,
+          _as_text(item.get('release_name', '')),
+          similarity_score=int(item.get('similarity_score', 0))
+        )
+        unknown_likelihood = int(unknown_eval.get('score', 0))
+        item['unknown_match_likelihood'] = unknown_likelihood
+
+      # Keep unknown fallback candidates ordered by title-likelihood, but
+      # skip clearly unrelated results before we attempt a download.
+      if unknown_likelihood < 32:
+        continue
+      if (
+        not _is_fallback_title_compatible(video_basename, _as_text(item.get('release_name', '')))
+        and unknown_likelihood < 48
+      ):
+        continue
+      filtered_candidates.append(item)
+    candidate_results = filtered_candidates
+    if len(candidate_results) == 0:
+      _log(
+        'lucky download rejected all fallback candidates: language=%s video=%s'
+        % (normalized_language, video_basename),
+        LOG_WARNING
+      )
+      return response
+    candidate_results.sort(key=_download_candidate_sort_key)
+  candidate_results = _interleave_download_candidates_by_provider(candidate_results)
+
+  try:
+    attempt_limit = int(max_write_attempts)
+  except:
+    attempt_limit = 5
+  if attempt_limit < 1:
+    attempt_limit = 1
+  attempt_limit = min(attempt_limit, len(candidate_results))
+  try:
+    provider_attempt_limit = int(max_provider_attempts)
+  except:
+    provider_attempt_limit = 2
+  if provider_attempt_limit < 1:
+    provider_attempt_limit = 1
+  provider_attempt_counts = {}
+  global_attempt = 0
+
+  for selected_result in candidate_results:
+    if global_attempt >= attempt_limit:
+      break
+
+    provider_key = _as_text(selected_result.get('provider_key') or selected_result.get('provider') or 'provider').lower()
+    if not provider_key:
+      provider_key = 'provider'
+    provider_attempt_count = int(provider_attempt_counts.get(provider_key, 0))
+    if provider_attempt_count >= provider_attempt_limit:
+      continue
+    provider_attempt_count += 1
+    provider_attempt_counts[provider_key] = provider_attempt_count
+    global_attempt += 1
+    if progress_callback is not None:
+      try:
+        provider_name = _as_text(selected_result.get('provider', provider_key))
+        release_name = _as_text(selected_result.get('release_name', 'subtitle'))
+        short_release = release_name if len(release_name) <= 68 else ('%s...' % (release_name[:65]))
+        if progress_label:
+          progress_callback('%s: %s (%s)' % (progress_label, provider_name, short_release))
+        else:
+          progress_callback('%s (%s)' % (provider_name, short_release))
+      except Exception:
+        pass
+
+    try:
+      target_path = _write_download_payload_to_target(context, normalized_language, selected_result)
+      response['path'] = target_path
+      response['result'] = selected_result
+      _log(
+        'lucky download selected: language=%s provider=%s tier=%s sync_score=%s release=%s path=%s'
+        % (
+          normalized_language,
+          _as_text(selected_result.get('provider', provider_key)),
+          _as_text(selected_result.get('sync_tier', 'unknown')).lower(),
+          int(selected_result.get('sync_score', 0)),
+          _as_text(selected_result.get('release_name', 'subtitle')),
+          target_path
+        ),
+        LOG_INFO
+      )
+      return response
+    except RuntimeError as exc:
+      _log(
+        'lucky download write failed for %s attempt=%d/%d provider=%s release=%s error=%s'
+        % (
+          normalized_language,
+          global_attempt,
+          attempt_limit,
+          _as_text(selected_result.get('provider', 'provider')),
+          _as_text(selected_result.get('release_name', 'subtitle')),
+          exc
+        ),
+        LOG_WARNING
+      )
+      if _is_retryable_download_error(exc):
+        try:
+          time.sleep(float(retry_delay_seconds) * float(provider_attempt_count))
+        except:
+          pass
+      continue
+    except Exception as exc:
+      _log(
+        'lucky download unexpected write failure for %s attempt=%d/%d provider=%s release=%s error=%s'
+        % (
+          normalized_language,
+          global_attempt,
+          attempt_limit,
+          _as_text(selected_result.get('provider', 'provider')),
+          _as_text(selected_result.get('release_name', 'subtitle')),
+          exc
+        ),
+        LOG_WARNING
+      )
+      if _is_retryable_download_error(exc):
+        try:
+          time.sleep(float(retry_delay_seconds) * float(provider_attempt_count))
+        except:
+          pass
+      continue
+
+  if notify_errors:
+    _notify(__language__(33193), NOTIFY_WARNING)
+  return response
+
+def _pick_best_exact_local_language_match(video_dir, video_basename, language_code):
+  matches = _find_subtitle_matches(video_dir, video_basename, language_code, strict=True)
+  if len(matches) == 0:
+    return ''
+
+  matches.sort(key=lambda item: (len(os.path.basename(item)), os.path.basename(item).lower()))
+  return matches[0]
+
+def _pick_best_local_likely_language_match(video_dir, video_basename, language_code):
+  target_language = _canonicalize_language_code(language_code)
+  if not target_language:
+    return ''
+
+  candidates = []
+  for path in _list_srt_files(video_dir, include_generated=False):
+    detected = _canonicalize_language_code(_detect_language_from_filename(path))
+    if not detected:
+      detected = _canonicalize_language_code(_detect_language_from_content(path))
+    if detected != target_language:
+      continue
+
+    release_name = os.path.splitext(os.path.basename(path))[0]
+    sync_eval = _evaluate_download_sync_likelihood(video_basename, release_name, {})
+    tier = _as_text(sync_eval.get('tier', 'unknown')).lower()
+    if tier not in ['exact', 'likely']:
+      continue
+    sync_score = int(sync_eval.get('score', 0))
+    similarity = _release_similarity_score(video_basename, release_name)
+    candidates.append((path, tier, sync_score, similarity))
+
+  if len(candidates) == 0:
+    return ''
+
+  candidates.sort(
+    key=lambda item: (
+      -int(SYNC_TIER_PRIORITY.get(item[1], 0)),
+      -int(item[2]),
+      -int(item[3]),
+      len(os.path.basename(item[0])),
+      os.path.basename(item[0]).lower()
+    )
+  )
+  return candidates[0][0]
+
+def _pick_best_local_any_language_match(video_dir, language_code):
+  target_language = _canonicalize_language_code(language_code)
+  if not target_language:
+    return ''
+
+  candidates = []
+  for path in _list_srt_files(video_dir, include_generated=False):
+    detected = _canonicalize_language_code(_detect_language_from_filename(path))
+    if not detected:
+      detected = _canonicalize_language_code(_detect_language_from_content(path))
+    if detected != target_language:
+      continue
+    candidates.append(path)
+
+  if len(candidates) == 0:
+    return ''
+  candidates.sort(key=lambda item: (len(os.path.basename(item)), os.path.basename(item).lower()))
+  return candidates[0]
+
+def _build_unknown_match_risk_reason(video_basename, result):
+  release_name = _as_text(result.get('release_name', ''))
+  unknown_eval = _unknown_match_likelihood_score(
+    video_basename,
+    release_name,
+    similarity_score=int(result.get('similarity_score', 0))
+  )
+  score = int(unknown_eval.get('score', 0))
+  overlap = int(unknown_eval.get('title_overlap', 0))
+  video_signature = _build_release_signature(video_basename)
+  release_signature = _build_release_signature(release_name)
+
+  if len(video_signature.get('title_tokens', [])) >= 2 and overlap == 0:
+    return __language__(33289)
+  if (
+    _as_text(video_signature.get('year', '')).strip()
+    and _as_text(release_signature.get('year', '')).strip()
+    and _as_text(video_signature.get('year', '')).strip() != _as_text(release_signature.get('year', '')).strip()
+  ):
+    return __language__(33290)
+  if (
+    _as_text(video_signature.get('source', '')).strip()
+    and _as_text(release_signature.get('source', '')).strip()
+    and _as_text(video_signature.get('source', '')).strip() != _as_text(release_signature.get('source', '')).strip()
+  ):
+    return __language__(33291)
+  if score < 25:
+    return __language__(33292)
+  if score < 45:
+    return __language__(33293)
+  return __language__(33284)
+
+def _collect_lucky_unknown_candidates(video_dir, video_basename, language_code, max_candidates=3):
+  if not video_dir or not video_basename or not language_code:
+    return []
+
+  context = _build_download_context(video_dir, video_basename)
+  normalized_language = _canonicalize_language_code(language_code) or _as_text(language_code).lower().strip()
+  if not normalized_language:
+    return []
+
+  try:
+    results = _search_download_results(context, normalized_language)
+  except RuntimeError as exc:
+    _log('lucky unknown candidate search failed for %s: %s' % (normalized_language, exc), LOG_WARNING)
+    return []
+  except Exception as exc:
+    _log('lucky unknown candidate search unexpected failure for %s: %s' % (normalized_language, exc), LOG_WARNING)
+    return []
+
+  unknown_candidates = []
+  seen_release = set()
+  for item in results:
+    tier = _as_text(item.get('sync_tier', 'unknown')).lower()
+    if tier in ['exact', 'likely']:
+      continue
+
+    release_name = _as_text(item.get('release_name', '')).strip()
+    provider_name = _as_text(item.get('provider', '')).strip()
+    dedupe_key = '%s::%s' % (provider_name.lower(), release_name.lower())
+    if dedupe_key in seen_release:
+      continue
+    seen_release.add(dedupe_key)
+
+    candidate = dict(item)
+    unknown_eval = _unknown_match_likelihood_score(
+      video_basename,
+      release_name,
+      similarity_score=int(candidate.get('similarity_score', 0))
+    )
+    candidate['unknown_match_likelihood'] = int(unknown_eval.get('score', 0))
+    candidate['risk_reason'] = _build_unknown_match_risk_reason(video_basename, candidate)
+    unknown_candidates.append(candidate)
+
+  unknown_candidates.sort(
+    key=lambda item: (
+      -int(item.get('unknown_match_likelihood', 0)),
+      -int(item.get('similarity_score', 0)),
+      -int(item.get('provider_score', 0)),
+      _as_text(item.get('release_name', '')).lower()
+    )
+  )
+
+  if max_candidates < 1:
+    max_candidates = 1
+  return unknown_candidates[:max_candidates]
+
+def _prompt_lucky_unknown_candidate(slot_label, candidates):
+  if not candidates:
+    return None
+
+  heading = __language__(33283) % (_as_text(slot_label) or '?')
+  remaining = list(candidates)
+  while remaining:
+    options = []
+    for item in remaining:
+      release_name = _as_text(item.get('release_name', 'subtitle')).strip() or 'subtitle'
+      if len(release_name) > 68:
+        release_name = '%s...' % (release_name[:65])
+      provider_name = _as_text(item.get('provider', 'provider')).strip() or 'provider'
+      risk_reason = _as_text(item.get('risk_reason', '')).strip() or __language__(33284)
+      options.append('%s [CR]%s | %s' % (release_name, provider_name, risk_reason))
+    options.append(__language__(33288))
+
+    selected_index = __msg_box__.select(heading, options)
+    if selected_index < 0 or selected_index >= len(remaining):
+      return None
+
+    selected_candidate = remaining[selected_index]
+    confirm_message = '%s[CR][CR]%s[CR]%s: %s[CR]%s: %s' % (
+      __language__(33294),
+      _as_text(selected_candidate.get('release_name', 'subtitle')).strip() or 'subtitle',
+      __language__(33295),
+      _as_text(selected_candidate.get('provider', 'provider')).strip() or 'provider',
+      __language__(33296),
+      _as_text(selected_candidate.get('risk_reason', '')).strip() or __language__(33284),
+    )
+    try_this = __msg_box__.yesno(
+      heading,
+      confirm_message,
+      '',
+      '',
+      __language__(33287),
+      __language__(33286)
+    )
+    if try_this:
+      return selected_candidate
+
+    del remaining[selected_index]
+
+  return None
+
+def _download_lucky_selected_candidate(video_dir, video_basename, slot, selected_candidate):
+  if not selected_candidate:
+    return ''
+  context = _build_download_context(video_dir, video_basename)
+  language_code = _canonicalize_language_code(slot.get('code', ''))
+  if not language_code:
+    return ''
+  try:
+    target_path = _write_download_payload_to_target(context, language_code, selected_candidate)
+    return target_path
+  except Exception as exc:
+    _log(
+      'lucky risky candidate download failed: language=%s release=%s provider=%s error=%s'
+      % (
+        language_code,
+        _as_text(selected_candidate.get('release_name', 'subtitle')),
+        _as_text(selected_candidate.get('provider', 'provider')),
+        exc
+      ),
+      LOG_WARNING
+    )
+    _notify(__language__(33193), NOTIFY_WARNING)
+    return ''
+
+def _offer_lucky_recovery_actions(missing_text):
+  missing_label = _as_text(missing_text).strip() or 'subtitle'
+  selected = __msg_box__.select(
+    __language__(33297) % (missing_label),
+    [
+      __language__(33298),
+      __language__(33299),
+      __language__(33133),
+    ]
+  )
+  if selected == 0:
+    _run_manual_download_action()
+  elif selected == 1:
+    _run_manual_translation_action()
+
+def _find_lucky_english_reference(
+  video_dir,
+  video_basename,
+  request_delay_seconds=0.0,
+  allow_unknown_download=False,
+  allow_unknown_local=False,
+  progress_callback=None
+):
+  result = {
+    'path': '',
+    'tier': '',
+    'origin': '',
+  }
+  if not video_dir or not video_basename:
+    return result
+
+  exact_local = _pick_best_exact_local_language_match(video_dir, video_basename, 'en')
+  if exact_local:
+    result['path'] = exact_local
+    result['tier'] = 'exact'
+    result['origin'] = 'local_exact'
+    return result
+
+  if _is_lucky_allow_english_likely():
+    likely_local = _pick_best_local_likely_language_match(video_dir, video_basename, 'en')
+    if likely_local:
+      result['path'] = likely_local
+      result['tier'] = 'likely'
+      result['origin'] = 'local_likely'
+      return result
+
+  if _is_lucky_download_enabled():
+    required_tiers = ['exact']
+    if _is_lucky_allow_english_likely():
+      required_tiers.append('likely')
+    if allow_unknown_download:
+      required_tiers.append('unknown')
+
+    downloaded = _download_best_result_for_language(
+      video_dir,
+      video_basename,
+      'en',
+      language_label='English',
+      required_tiers=required_tiers,
+      fallback_to_top=False,
+      notify_errors=False,
+      max_write_attempts=4,
+      request_delay_seconds=request_delay_seconds,
+      max_provider_attempts=2,
+      retry_delay_seconds=0.95,
+      progress_callback=progress_callback,
+      progress_label='English reference'
+    )
+    if downloaded.get('path'):
+      selected_result = downloaded.get('result') or {}
+      selected_tier = _as_text(selected_result.get('sync_tier', 'unknown')).lower()
+      if selected_tier not in ['exact', 'likely', 'unknown']:
+        selected_tier = 'unknown'
+      result['path'] = downloaded['path']
+      result['tier'] = selected_tier
+      result['origin'] = 'download_%s' % (selected_tier)
+      return result
+
+  if allow_unknown_local:
+    local_any = _pick_best_local_any_language_match(video_dir, 'en')
+    if local_any:
+      result['path'] = local_any
+      result['tier'] = 'unknown'
+      result['origin'] = 'local_unknown'
+      return result
+
+  return result
+
+def _assess_subtitle_pair_mismatch(reference_path, target_path):
+  reference_subs = None
+  target_subs = None
+  reference_local = ''
+  target_local = ''
+  try:
+    reference_subs, reference_local = _load_subtitle_for_processing(reference_path)
+    target_subs, target_local = _load_subtitle_for_processing(target_path)
+    return smartsync.assess_pair(reference_subs, target_subs)
+  except Exception as exc:
+    _log('lucky mismatch assessment failed: ref=%s target=%s error=%s' % (reference_path, target_path, exc), LOG_WARNING)
+    return {}
+  finally:
+    if reference_local:
+      xbmcvfs.delete(reference_local)
+    if target_local:
+      xbmcvfs.delete(target_local)
+
+def _run_lucky_smartsync_to_reference(reference_path, target_path, force_apply=False):
+  response = {
+    'applied': False,
+    'path': target_path,
+    'persisted': False,
+    'temp_paths': [],
+  }
+  if not reference_path or not target_path:
+    return response
+  if reference_path.lower() == target_path.lower():
+    return response
+
+  mismatch = _assess_subtitle_pair_mismatch(reference_path, target_path)
+  if not force_apply and not mismatch.get('likely_mismatch'):
+    _log('lucky smart sync skipped: mismatch not detected (ref=%s target=%s)' % (reference_path, target_path), LOG_INFO)
+    return response
+
+  try:
+    local_result = _run_smart_sync_local(reference_path, target_path)
+    sync_apply = _apply_synced_subtitle_to_target(target_path, local_result['synced_subs'])
+  except Exception as exc:
+    _log('lucky smart sync failed: ref=%s target=%s error=%s' % (reference_path, target_path, exc), LOG_WARNING)
+    return response
+
+  response['applied'] = True
+  response['path'] = sync_apply.get('play_path') or target_path
+  response['persisted'] = bool(sync_apply.get('persisted'))
+  if sync_apply.get('temp_path'):
+    response['temp_paths'].append(sync_apply.get('temp_path'))
+  _log('lucky smart sync applied: ref=%s target=%s output=%s persisted=%s' % (reference_path, target_path, response['path'], response['persisted']), LOG_INFO)
+  return response
 
 def _run_download_for_language(video_dir, video_basename, language_code, language_label=''):
   if not video_dir or not video_basename:
@@ -3676,6 +4509,1118 @@ def _pick_subtitles_with_settings(start_dir, apply_no_match_behavior=False, forc
   _log('manual picker selected subtitle1=%s subtitle2=%s' % (subtitle1, subtitle2), LOG_INFO)
   return subtitle1, subtitle2, subtitle1_dir
 
+def _finalize_selected_subtitle_paths(subtitle1, subtitle2, subtitle1_dir='', smart_sync_temp_files=None):
+  if subtitle1 is None:
+    return False
+
+  if smart_sync_temp_files is None:
+    smart_sync_temp_files = []
+
+  if not subtitle1_dir:
+    subtitle1_dir = os.path.dirname(subtitle1)
+  _remember_last_used_dir(subtitle1_dir)
+  _log('selected subtitles before merge: subtitle1=%s subtitle2=%s' % (subtitle1, subtitle2), LOG_INFO)
+
+  subs = [subtitle1]
+  if subtitle2 is not None:
+    subs.append(subtitle2)
+
+  try:
+    finalfile = _prepare_and_merge_subtitles(subs)
+  except Exception as exc:
+    _log('subtitle merge failed: %s' % (exc), LOG_ERROR)
+    _notify(__language__(33042), NOTIFY_ERROR)
+    __msg_box__.ok(__language__(32531), str(exc))
+    return False
+  finally:
+    for temp_sync_path in smart_sync_temp_files:
+      try:
+        if temp_sync_path and temp_sync_path.startswith(__temp__):
+          xbmcvfs.delete(temp_sync_path)
+      except:
+        pass
+
+  Download(finalfile)
+  if len(subs) > 1:
+    _notify(__language__(33041), NOTIFY_INFO)
+  else:
+    _notify(__language__(33045), NOTIFY_INFO)
+  return True
+
+def _build_lucky_target_slots():
+  language1 = _parse_language_code('preferred_language_1')
+  language2 = _parse_language_code('preferred_language_2')
+  if not language1 or not language2 or language1 == language2:
+    return []
+
+  return [
+    {
+      'slot': 'subtitle1',
+      'code': language1,
+      'label': _language_label('preferred_language_1'),
+      'path': '',
+      'origin': 'missing',
+    },
+    {
+      'slot': 'subtitle2',
+      'code': language2,
+      'label': _language_label('preferred_language_2'),
+      'path': '',
+      'origin': 'missing',
+    }
+  ]
+
+def _build_lucky_single_target_slot():
+  target_code = _parse_language_code('lucky_single_language')
+  if not target_code:
+    target_code = _parse_language_code('preferred_language_1')
+  if not target_code:
+    return {}
+
+  target_label = _language_display_name(target_code)
+  if not target_label:
+    target_label = target_code.upper()
+
+  return {
+    'slot': 'subtitle1',
+    'code': target_code,
+    'label': target_label,
+    'path': '',
+    'origin': 'missing',
+  }
+
+def _lucky_missing_slots(slots):
+  missing = []
+  for slot in slots:
+    if not slot.get('path'):
+      missing.append(slot)
+  return missing
+
+def _pick_lucky_translation_source(video_dir, video_basename, english_reference_path, slots, exclude_source_paths=None, english_only=False):
+  excluded = set()
+  for item in exclude_source_paths or []:
+    value = _as_text(item).strip()
+    if value:
+      excluded.add(os.path.normcase(os.path.normpath(value)))
+
+  def _is_excluded(path):
+    value = _as_text(path).strip()
+    if not value:
+      return False
+    try:
+      normalized = os.path.normcase(os.path.normpath(value))
+    except Exception:
+      normalized = value.lower()
+    return normalized in excluded
+
+  if english_reference_path and xbmcvfs.exists(english_reference_path) and not _is_excluded(english_reference_path):
+    return english_reference_path
+
+  local_english_exact = _pick_best_exact_local_language_match(video_dir, video_basename, 'en')
+  if local_english_exact and not _is_excluded(local_english_exact):
+    return local_english_exact
+
+  local_english_likely = _pick_best_local_likely_language_match(video_dir, video_basename, 'en')
+  if local_english_likely and not _is_excluded(local_english_likely):
+    return local_english_likely
+
+  if english_only:
+    for slot in slots or []:
+      slot_path = _as_text(slot.get('path', '')).strip()
+      if not slot_path or _is_excluded(slot_path):
+        continue
+      detected_code = _guess_language_code_from_path(slot_path)
+      if detected_code == 'en':
+        return slot_path
+    return ''
+
+  for slot in slots:
+    slot_path = slot.get('path')
+    if slot_path and not _is_excluded(slot_path):
+      return slot_path
+
+  local_files = _list_srt_files(video_dir, include_generated=False)
+  for item in local_files:
+    if not _is_excluded(item):
+      return item
+  return ''
+
+def _create_lucky_progress():
+  progress = None
+  try:
+    progress = xbmcgui.DialogProgress()
+    progress.create(__language__(33230), __language__(33236))
+  except Exception:
+    progress = None
+  return progress
+
+def _update_lucky_progress(progress, percent, line1='', line2=''):
+  _progress_update(progress, percent, line1, line2)
+  if progress is None:
+    return True
+  try:
+    if progress.iscanceled():
+      return False
+  except Exception:
+    pass
+  return True
+
+def _pause_playback_for_lucky_step():
+  state = {
+    'can_resume': False,
+    'was_playing_video': False,
+    'was_paused': False,
+  }
+
+  player = xbmc.Player()
+  try:
+    state['was_playing_video'] = bool(player.isPlayingVideo())
+  except Exception:
+    return state
+
+  if not state['was_playing_video']:
+    return state
+
+  try:
+    state['was_paused'] = bool(xbmc.getCondVisibility('Player.Paused'))
+  except Exception:
+    state['was_paused'] = False
+
+  if state['was_paused']:
+    return state
+
+  try:
+    player.pause()
+    xbmc.sleep(180)
+    state['can_resume'] = True
+    _log('lucky translation: playback paused for AI translation step', LOG_INFO)
+  except Exception as exc:
+    _log('lucky translation: failed to pause playback (%s)' % (exc), LOG_WARNING)
+
+  return state
+
+def _resume_playback_for_lucky_step(state):
+  if not state or not state.get('can_resume'):
+    return
+
+  player = xbmc.Player()
+  try:
+    if not player.isPlayingVideo():
+      return
+  except Exception:
+    return
+
+  try:
+    is_paused_now = bool(xbmc.getCondVisibility('Player.Paused'))
+  except Exception:
+    is_paused_now = False
+
+  if not is_paused_now:
+    return
+
+  try:
+    player.pause()
+    xbmc.sleep(180)
+    _log('lucky translation: playback resumed after AI translation step', LOG_INFO)
+  except Exception as exc:
+    _log('lucky translation: failed to resume playback (%s)' % (exc), LOG_WARNING)
+
+def _normalize_subtitle_preview_text(text):
+  normalized = _as_text(text)
+  normalized = normalized.replace('\\N', ' ')
+  normalized = normalized.replace('\n', ' ')
+  normalized = re.sub(r'\{\\[^}]*\}', ' ', normalized)
+  normalized = re.sub(r'<[^>]+>', ' ', normalized)
+  normalized = re.sub(r'\[[^\]]+\]', ' ', normalized)
+  normalized = re.sub(r'\s+', ' ', normalized).strip()
+  return normalized
+
+def _first_spoken_subtitle_start_ms(subtitle_path):
+  local_copy = ''
+  try:
+    subtitle_data, local_copy = _load_subtitle_for_processing(subtitle_path)
+    for event in getattr(subtitle_data, 'events', []):
+      text = _normalize_subtitle_preview_text(getattr(event, 'text', ''))
+      if not text:
+        continue
+      if re.match(r'^[\W_]+$', text):
+        continue
+      try:
+        return int(max(0, getattr(event, 'start', 0)))
+      except Exception:
+        return 0
+  except Exception as exc:
+    _log('lucky english preview parse failed: %s' % (exc), LOG_WARNING)
+  finally:
+    try:
+      if local_copy and xbmcvfs.exists(local_copy):
+        xbmcvfs.delete(local_copy)
+    except Exception:
+      pass
+  return 0
+
+def _capture_lucky_preview_state():
+  state = {
+    'valid': False,
+    'play_time_seconds': 0.0,
+    'subtitle_path': '',
+    'subtitle_visible': None,
+    'was_fullscreen_video': False,
+  }
+
+  player = xbmc.Player()
+  try:
+    if not player.isPlayingVideo():
+      return state
+  except Exception:
+    return state
+
+  try:
+    state['play_time_seconds'] = float(max(0.0, player.getTime()))
+  except Exception:
+    state['play_time_seconds'] = 0.0
+
+  try:
+    subtitle_path = _as_text(xbmc.getInfoLabel('VideoPlayer.SubtitlesFilename')).strip()
+    if not subtitle_path:
+      subtitle_path = _as_text(xbmc.getInfoLabel('VideoPlayer.SubtitlesFile')).strip()
+    state['subtitle_path'] = subtitle_path
+  except Exception:
+    state['subtitle_path'] = ''
+
+  try:
+    state['subtitle_visible'] = bool(xbmc.getCondVisibility('VideoPlayer.SubtitlesEnabled'))
+  except Exception:
+    state['subtitle_visible'] = None
+
+  try:
+    state['was_fullscreen_video'] = bool(xbmc.getCondVisibility('Window.IsActive(fullscreenvideo)'))
+  except Exception:
+    state['was_fullscreen_video'] = False
+
+  state['valid'] = True
+  return state
+
+def _restore_lucky_preview_state(state):
+  if not state or not state.get('valid'):
+    return
+
+  player = xbmc.Player()
+  try:
+    if not player.isPlayingVideo():
+      return
+  except Exception:
+    return
+
+  play_time = state.get('play_time_seconds')
+  try:
+    play_time = float(play_time)
+  except Exception:
+    play_time = None
+
+  if play_time is not None and play_time >= 0.0:
+    try:
+      player.seekTime(play_time)
+    except Exception as exc:
+      _log('lucky english preview restore seek failed: %s' % (exc), LOG_WARNING)
+
+  subtitle_path = _as_text(state.get('subtitle_path', '')).strip()
+  if subtitle_path and xbmcvfs.exists(subtitle_path):
+    try:
+      player.setSubtitles(subtitle_path)
+    except Exception as exc:
+      _log('lucky english preview restore subtitles failed: %s' % (exc), LOG_WARNING)
+
+  subtitle_visible = state.get('subtitle_visible')
+  if subtitle_visible is not None:
+    try:
+      player.showSubtitles(bool(subtitle_visible))
+    except Exception as exc:
+      _log('lucky english preview restore visibility failed: %s' % (exc), LOG_WARNING)
+
+  expected_fullscreen = bool(state.get('was_fullscreen_video'))
+  try:
+    current_fullscreen = bool(xbmc.getCondVisibility('Window.IsActive(fullscreenvideo)'))
+  except Exception:
+    current_fullscreen = expected_fullscreen
+
+  if expected_fullscreen != current_fullscreen:
+    try:
+      xbmc.executebuiltin('Action(FullScreen)')
+      xbmc.sleep(120)
+    except Exception as exc:
+      _log('lucky english preview restore fullscreen state failed: %s' % (exc), LOG_WARNING)
+
+def _run_lucky_english_sync_preview(english_reference_path):
+  result = {
+    'started': False,
+    'state': {},
+  }
+  if not english_reference_path:
+    return result
+
+  player = xbmc.Player()
+  try:
+    if not player.isPlayingVideo():
+      return result
+  except Exception:
+    return result
+
+  result['state'] = _capture_lucky_preview_state()
+
+  first_start_ms = _first_spoken_subtitle_start_ms(english_reference_path)
+  seek_seconds = max(0.0, (float(first_start_ms) / 1000.0) - 1.0)
+
+  try:
+    player.setSubtitles(english_reference_path)
+  except Exception as exc:
+    _log('lucky english preview setSubtitles failed: %s' % (exc), LOG_WARNING)
+
+  try:
+    player.showSubtitles(True)
+  except Exception:
+    pass
+
+  try:
+    player.seekTime(seek_seconds)
+  except Exception as exc:
+    _log('lucky english preview seek failed: %s' % (exc), LOG_WARNING)
+    return result
+
+  result['started'] = True
+  return result
+
+def _focus_video_for_lucky_preview(state=None):
+  # Ensure preview is visible on top of subtitle/search dialogs.
+  try:
+    xbmc.executebuiltin('Dialog.Close(subtitlesearch,true)')
+  except Exception:
+    pass
+  try:
+    xbmc.executebuiltin('Dialog.Close(DialogSubtitles.xml,true)')
+  except Exception:
+    pass
+  try:
+    xbmc.executebuiltin('Dialog.Close(DialogSettings.xml,true)')
+  except Exception:
+    pass
+  try:
+    if xbmc.getCondVisibility('Window.IsActive(fullscreenvideo)'):
+      xbmc.executebuiltin('Action(FullScreen)')
+      xbmc.sleep(120)
+  except Exception:
+    pass
+  try:
+    xbmc.executebuiltin('ActivateWindow(Home)')
+  except Exception:
+    pass
+
+def _show_lucky_english_preview_dialog(english_reference_path):
+  if LuckyPreviewDialog is None:
+    try:
+      if __msg_box__.yesno(__language__(33230), __language__(33269)):
+        return 'sync'
+      return 'not_sync'
+    except Exception:
+      return 'cancel'
+
+  subtitle_name = os.path.basename(_as_text(english_reference_path).strip())
+  if not subtitle_name:
+    subtitle_name = _as_text(english_reference_path).strip()
+
+  try:
+    dialog = LuckyPreviewDialog(
+      LUCKY_PREVIEW_XML,
+      __cwd__,
+      'default',
+      '1080i',
+      heading=__language__(33230),
+      subtitle=subtitle_name,
+      message=__language__(33272),
+      sync_label=__language__(33271),
+      not_sync_label=__language__(33273),
+      cancel_label=__language__(33133)
+    )
+    dialog.doModal()
+    selection = _as_text(getattr(dialog, 'result', '')).lower().strip()
+    del dialog
+  except Exception as exc:
+    _log('lucky preview dialog failed (%s), using yes/no fallback' % (exc), LOG_WARNING)
+    try:
+      if __msg_box__.yesno(__language__(33230), __language__(33269)):
+        return 'sync'
+      return 'not_sync'
+    except Exception:
+      return 'cancel'
+
+  if selection in ['sync', 'not_sync', 'cancel']:
+    return selection
+  return 'cancel'
+
+def _run_lucky_translate_missing_slots(
+  slots,
+  video_dir,
+  video_basename,
+  english_reference_path,
+  exclude_source_paths=None,
+  require_english_source=False,
+  notify=False,
+  progress_callback=None
+):
+  missing_slots = _lucky_missing_slots(slots)
+  if len(missing_slots) == 0:
+    return
+  if not _is_lucky_ai_translate_enabled():
+    return
+
+  if not _is_ai_translation_enabled() or not _get_openai_api_key():
+    for slot in missing_slots:
+      if notify:
+        _notify(__language__(33247) % (slot['label']), NOTIFY_WARNING, timeout=4500)
+    return
+
+  playback_state = _pause_playback_for_lucky_step()
+
+  source_subtitle = _pick_lucky_translation_source(
+    video_dir,
+    video_basename,
+    english_reference_path,
+    slots,
+    exclude_source_paths=exclude_source_paths,
+    english_only=require_english_source
+  )
+  if not source_subtitle:
+    if require_english_source:
+      _log('lucky translation skipped: no English source available for missing targets', LOG_WARNING)
+    for slot in missing_slots:
+      if notify:
+        _notify(__language__(33247) % (slot['label']), NOTIFY_WARNING, timeout=4500)
+    _resume_playback_for_lucky_step(playback_state)
+    return
+
+  source_language_code = _guess_language_code_from_path(source_subtitle)
+  source_label = _language_display_name(source_language_code)
+  if not source_label or source_language_code == 'auto':
+    source_label = os.path.basename(source_subtitle)
+  try:
+    for slot in missing_slots:
+      target_label = _as_text(slot.get('label', slot.get('code', 'target')))
+      if progress_callback is not None:
+        try:
+          progress_callback(__language__(33304) % (source_label, target_label))
+        except Exception:
+          pass
+      _log(
+        'lucky translation step: translating %s -> %s using AI (source=%s)'
+        % (source_label, target_label, source_subtitle),
+        LOG_INFO
+      )
+      try:
+        translated_path = _translate_subtitle_file(source_subtitle, source_language_code, slot['code'])
+        slot['path'] = translated_path
+        slot['origin'] = 'translated'
+        if notify:
+          _notify(__language__(33243) % (slot['label'], source_label), NOTIFY_INFO, timeout=3500)
+        _log('lucky translation created for %s from %s: %s' % (slot['code'], source_subtitle, translated_path), LOG_INFO)
+      except Exception as exc:
+        _log('lucky translation failed for %s (%s)' % (slot['code'], exc), LOG_WARNING)
+        if notify:
+          _notify(__language__(33247) % (slot['label']), NOTIFY_WARNING, timeout=4500)
+  finally:
+    _resume_playback_for_lucky_step(playback_state)
+
+def _cleanup_lucky_temp_sync_files(temp_paths):
+  for temp_sync_path in temp_paths or []:
+    try:
+      if temp_sync_path and temp_sync_path.startswith(__temp__):
+        xbmcvfs.delete(temp_sync_path)
+    except:
+      pass
+
+def _run_i_feel_lucky_single_flow():
+  video_dir, video_basename = _current_video_context()
+  if not video_dir or not video_basename:
+    _notify(__language__(33175), NOTIFY_WARNING)
+    return
+
+  slot = _build_lucky_single_target_slot()
+  if not slot:
+    _notify(__language__(33279), NOTIFY_WARNING)
+    return
+
+  _cleanup_generated_movie_sidecars(video_dir, video_basename)
+  _log('i feel lucky single start: video_dir=%s video=%s target=%s' % (video_dir, video_basename, slot.get('code')), LOG_INFO)
+
+  progress = _create_lucky_progress()
+  smart_sync_temp_files = []
+  lucky_cancel_token = '__lucky_cancelled__'
+  english_preview_confirmed_sync = False
+
+  def _step(percent, line1='', line2=''):
+    if not _update_lucky_progress(progress, percent, line1, line2):
+      raise RuntimeError(lucky_cancel_token)
+
+  def _attempt_download(required_tiers, fallback_to_top, percent, status_label, delay_seconds):
+    def _progress_line(message):
+      _step(percent, status_label, message)
+
+    result = _download_best_result_for_language(
+      video_dir,
+      video_basename,
+      slot['code'],
+      language_label=slot['label'],
+      required_tiers=required_tiers,
+      fallback_to_top=fallback_to_top,
+      notify_errors=False,
+      max_write_attempts=8,
+      request_delay_seconds=delay_seconds,
+      max_provider_attempts=2,
+      retry_delay_seconds=0.95,
+      progress_callback=_progress_line,
+      progress_label=slot['label']
+    )
+    path = result.get('path')
+    if not path:
+      return False
+    slot['path'] = path
+    selected_result = result.get('result') or {}
+    sync_tier = _as_text(selected_result.get('sync_tier', 'unknown')).lower()
+    if sync_tier not in ['exact', 'likely', 'unknown']:
+      sync_tier = 'unknown'
+    slot['origin'] = 'download_%s' % (sync_tier)
+    return True
+
+  try:
+    _step(4, __language__(33236), __language__(33251))
+
+    exact_local = _pick_best_exact_local_language_match(video_dir, video_basename, slot['code'])
+    if exact_local:
+      slot['path'] = exact_local
+      slot['origin'] = 'local_exact'
+
+    download_request_delay_seconds = 0.0
+    if not slot.get('path') and _is_lucky_download_enabled():
+      status_line = __language__(33258) % (slot['label'])
+      _step(18, status_line)
+      downloaded = _attempt_download(
+        required_tiers=['exact', 'likely'],
+        fallback_to_top=False,
+        percent=26,
+        status_label=status_line,
+        delay_seconds=download_request_delay_seconds
+      )
+      download_request_delay_seconds = 1.15
+      if downloaded:
+        _step(34, __language__(33242) % (slot['label']))
+
+    english_reference_path = ''
+    english_reference_tier = ''
+    rejected_english_reference_path = ''
+    needs_english_reference = not slot.get('path')
+
+    if needs_english_reference:
+      _step(42, __language__(33261))
+
+      def _english_progress(message):
+        _step(46, __language__(33261), message)
+
+      english_reference = _find_lucky_english_reference(
+        video_dir,
+        video_basename,
+        request_delay_seconds=download_request_delay_seconds,
+        allow_unknown_download=False,
+        allow_unknown_local=False,
+        progress_callback=_english_progress
+      )
+      english_reference_path = english_reference.get('path')
+      english_reference_tier = _as_text(english_reference.get('tier', '')).lower()
+
+      if english_reference_path:
+        _step(52, __language__(33245) % (_as_text(english_reference_tier or 'likely').upper()))
+      else:
+        _step(52, __language__(33246))
+
+    if not slot.get('path') and _is_lucky_download_enabled() and english_reference_path:
+      status_line = __language__(33259) % (slot['label'])
+      _step(58, status_line)
+      downloaded = _attempt_download(
+        required_tiers=['exact', 'likely'],
+        fallback_to_top=False,
+        percent=62,
+        status_label=status_line,
+        delay_seconds=download_request_delay_seconds
+      )
+      download_request_delay_seconds = 1.15
+      if downloaded:
+        _step(66, __language__(33242) % (slot['label']))
+
+    can_use_reference_for_sync = english_reference_tier in ['exact', 'likely']
+    should_test_english_reference = False
+    if english_reference_path and _is_lucky_prompt_english_test_enabled() and (not slot.get('path') or _as_text(slot.get('origin', '')).lower() == 'download_unknown'):
+      try:
+        prompt_message = '%s[CR][CR]%s' % (__language__(33249), __language__(33250))
+        should_test_english_reference = __msg_box__.yesno(__language__(33230), prompt_message)
+      except Exception:
+        should_test_english_reference = False
+
+    if should_test_english_reference and english_reference_path and can_use_reference_for_sync:
+      _close_progress(progress)
+      progress = None
+      preview_result = _run_lucky_english_sync_preview(english_reference_path)
+      if preview_result.get('started'):
+        _focus_video_for_lucky_preview(preview_result.get('state'))
+        _log('lucky single english preview started: reference=%s' % (english_reference_path), LOG_INFO)
+        preview_selection = 'cancel'
+        try:
+          preview_selection = _show_lucky_english_preview_dialog(english_reference_path)
+        finally:
+          try:
+            _restore_lucky_preview_state(preview_result.get('state'))
+            _log('lucky single english preview restore complete', LOG_INFO)
+          except Exception:
+            pass
+
+        if preview_selection == 'cancel':
+          raise RuntimeError(lucky_cancel_token)
+
+        if preview_selection == 'sync':
+          english_preview_confirmed_sync = True
+        else:
+          rejected_english_reference_path = english_reference_path
+          english_reference_path = ''
+          english_reference_tier = ''
+          can_use_reference_for_sync = False
+          _log('lucky single english reference rejected by user after preview', LOG_INFO)
+          _notify(__language__(33270), NOTIFY_WARNING, timeout=4000)
+      progress = _create_lucky_progress()
+      _step(68, __language__(33264))
+
+    if _is_lucky_smartsync_enabled() and english_reference_path and can_use_reference_for_sync:
+      slot_path = slot.get('path')
+      if slot_path and slot_path.lower() != english_reference_path.lower():
+        _step(72, __language__(33262) % (slot['label']))
+        force_sync_apply = bool(english_preview_confirmed_sync and _as_text(slot.get('origin', '')).lower().startswith('download_'))
+        sync_apply = _run_lucky_smartsync_to_reference(english_reference_path, slot_path, force_apply=force_sync_apply)
+        if sync_apply.get('applied'):
+          slot['path'] = sync_apply.get('path') or slot_path
+          slot['origin'] = 'smartsync'
+          for temp_path in sync_apply.get('temp_paths', []):
+            smart_sync_temp_files.append(temp_path)
+          _step(78, __language__(33244) % (slot['label']))
+
+    if not slot.get('path') and _is_lucky_ai_translate_enabled():
+      def _translation_progress(message):
+        _step(84, __language__(33260), message)
+
+      _run_lucky_translate_missing_slots(
+        [slot],
+        video_dir,
+        video_basename,
+        english_reference_path,
+        exclude_source_paths=[rejected_english_reference_path] if rejected_english_reference_path else None,
+        require_english_source=True,
+        notify=False,
+        progress_callback=_translation_progress
+      )
+
+    if not slot.get('path') and _is_lucky_download_enabled():
+      _step(88, __language__(33300) % (slot['label']))
+      _close_progress(progress)
+      progress = None
+
+      unknown_candidates = _collect_lucky_unknown_candidates(
+        video_dir,
+        video_basename,
+        slot.get('code', ''),
+        max_candidates=3
+      )
+      _log(
+        'lucky single unknown fallback candidates: language=%s count=%d'
+        % (slot.get('code', ''), len(unknown_candidates)),
+        LOG_INFO
+      )
+      if len(unknown_candidates) == 0:
+        _notify(__language__(33301) % (slot['label']), NOTIFY_WARNING, timeout=4500)
+      else:
+        risky_candidate = _prompt_lucky_unknown_candidate(slot.get('label', slot.get('code', '')), unknown_candidates)
+        if risky_candidate:
+          risky_path = _download_lucky_selected_candidate(video_dir, video_basename, slot, risky_candidate)
+          if risky_path:
+            slot['path'] = risky_path
+            slot['origin'] = 'download_unknown_user'
+            _log(
+              'lucky single user-selected risky candidate: language=%s provider=%s release=%s reason=%s'
+              % (
+                slot.get('code', ''),
+                _as_text(risky_candidate.get('provider', 'provider')),
+                _as_text(risky_candidate.get('release_name', 'subtitle')),
+                _as_text(risky_candidate.get('risk_reason', __language__(33284)))
+              ),
+              LOG_WARNING
+            )
+            _notify(__language__(33302) % (slot['label']), NOTIFY_INFO, timeout=3500)
+            if _is_lucky_smartsync_enabled() and english_reference_path and can_use_reference_for_sync and risky_path.lower() != english_reference_path.lower():
+              sync_apply = _run_lucky_smartsync_to_reference(english_reference_path, risky_path, force_apply=True)
+              if sync_apply.get('applied'):
+                slot['path'] = sync_apply.get('path') or risky_path
+                slot['origin'] = 'smartsync'
+                for temp_path in sync_apply.get('temp_paths', []):
+                  smart_sync_temp_files.append(temp_path)
+          else:
+            _notify(__language__(33301) % (slot['label']), NOTIFY_WARNING, timeout=4500)
+        else:
+          _log('lucky single user skipped risky candidates for %s' % (slot.get('code', 'target')), LOG_WARNING)
+          _notify(__language__(33303) % (slot['label']), NOTIFY_WARNING, timeout=3500)
+
+      progress = _create_lucky_progress()
+      _step(90, __language__(33265))
+
+    _step(94, __language__(33265))
+    subtitle1 = slot.get('path')
+
+    if not subtitle1:
+      _log('i feel lucky single stop: missing=%s' % (slot.get('label', slot.get('code', 'target'))), LOG_WARNING)
+      _notify(__language__(33281) % (slot.get('label', slot.get('code', 'target'))), NOTIFY_WARNING)
+      _close_progress(progress)
+      progress = None
+      _offer_lucky_recovery_actions(slot.get('label', slot.get('code', 'target')))
+      _cleanup_lucky_temp_sync_files(smart_sync_temp_files)
+      return
+
+    _step(100, __language__(33282))
+    subtitle1_dir = os.path.dirname(subtitle1) if subtitle1 else video_dir
+    finalized = _finalize_selected_subtitle_paths(
+      subtitle1,
+      None,
+      subtitle1_dir=subtitle1_dir,
+      smart_sync_temp_files=smart_sync_temp_files
+    )
+
+    if finalized:
+      _notify(__language__(33280) % (slot.get('label', slot.get('code', 'target'))), NOTIFY_INFO)
+    else:
+      _cleanup_lucky_temp_sync_files(smart_sync_temp_files)
+      _notify(__language__(33241), NOTIFY_WARNING)
+  except RuntimeError as exc:
+    if _as_text(exc) == lucky_cancel_token:
+      _cleanup_lucky_temp_sync_files(smart_sync_temp_files)
+      _notify(__language__(33256), NOTIFY_WARNING)
+      return
+    _cleanup_lucky_temp_sync_files(smart_sync_temp_files)
+    _log('i feel lucky single runtime error: %s' % (exc), LOG_WARNING)
+    _notify(__language__(33241), NOTIFY_WARNING)
+  except Exception as exc:
+    _cleanup_lucky_temp_sync_files(smart_sync_temp_files)
+    _log('i feel lucky single unexpected error: %s' % (exc), LOG_ERROR)
+    _notify(__language__(33241), NOTIFY_WARNING)
+  finally:
+    _close_progress(progress)
+
+def _run_i_feel_lucky_flow():
+  video_dir, video_basename = _current_video_context()
+  if not video_dir or not video_basename:
+    _notify(__language__(33175), NOTIFY_WARNING)
+    return
+
+  slots = _build_lucky_target_slots()
+  if len(slots) != 2:
+    _notify(__language__(33240), NOTIFY_WARNING)
+    return
+
+  _cleanup_generated_movie_sidecars(video_dir, video_basename)
+  _log('i feel lucky start: video_dir=%s video=%s' % (video_dir, video_basename), LOG_INFO)
+
+  progress = _create_lucky_progress()
+  smart_sync_temp_files = []
+  lucky_cancel_token = '__lucky_cancelled__'
+  english_preview_confirmed_sync = False
+
+  def _step(percent, line1='', line2=''):
+    if not _update_lucky_progress(progress, percent, line1, line2):
+      raise RuntimeError(lucky_cancel_token)
+
+  def _attempt_download_for_slot(slot, required_tiers, fallback_to_top, percent, status_label, delay_seconds):
+    def _progress_line(message):
+      _step(percent, status_label, message)
+
+    result = _download_best_result_for_language(
+      video_dir,
+      video_basename,
+      slot['code'],
+      language_label=slot['label'],
+      required_tiers=required_tiers,
+      fallback_to_top=fallback_to_top,
+      notify_errors=False,
+      max_write_attempts=8,
+      request_delay_seconds=delay_seconds,
+      max_provider_attempts=2,
+      retry_delay_seconds=0.95,
+      progress_callback=_progress_line,
+      progress_label=slot['label']
+    )
+    path = result.get('path')
+    if not path:
+      return False
+    slot['path'] = path
+    selected_result = result.get('result') or {}
+    sync_tier = _as_text(selected_result.get('sync_tier', 'unknown')).lower()
+    if sync_tier not in ['exact', 'likely', 'unknown']:
+      sync_tier = 'unknown'
+    slot['origin'] = 'download_%s' % (sync_tier)
+    return True
+
+  try:
+    _step(4, __language__(33236), __language__(33251))
+
+    automatch = _auto_match_subtitles(video_dir, video_basename)
+    if automatch.get('subtitle1'):
+      slots[0]['path'] = automatch.get('subtitle1')
+      slots[0]['origin'] = 'local_exact'
+    if automatch.get('subtitle2'):
+      slots[1]['path'] = automatch.get('subtitle2')
+      slots[1]['origin'] = 'local_exact'
+
+    download_request_delay_seconds = 0.0
+    if _is_lucky_download_enabled():
+      for slot in _lucky_missing_slots(slots):
+        status_line = __language__(33258) % (slot['label'])
+        _step(18, status_line)
+        downloaded = _attempt_download_for_slot(
+          slot,
+          required_tiers=['exact', 'likely'],
+          fallback_to_top=False,
+          percent=26,
+          status_label=status_line,
+          delay_seconds=download_request_delay_seconds
+        )
+        download_request_delay_seconds = 1.15
+        if downloaded:
+          _step(34, __language__(33242) % (slot['label']))
+
+    english_reference_path = ''
+    english_reference_tier = ''
+    rejected_english_reference_path = ''
+    needs_english_reference = len(_lucky_missing_slots(slots)) > 0
+
+    if needs_english_reference:
+      _step(42, __language__(33261))
+
+      def _english_progress(message):
+        _step(46, __language__(33261), message)
+
+      english_reference = _find_lucky_english_reference(
+        video_dir,
+        video_basename,
+        request_delay_seconds=download_request_delay_seconds,
+        allow_unknown_download=False,
+        allow_unknown_local=False,
+        progress_callback=_english_progress
+      )
+      english_reference_path = english_reference.get('path')
+      english_reference_tier = _as_text(english_reference.get('tier', '')).lower()
+
+      if english_reference_path:
+        _step(52, __language__(33245) % (_as_text(english_reference_tier or 'likely').upper()))
+      else:
+        _step(52, __language__(33246))
+
+    if _is_lucky_download_enabled() and english_reference_path:
+      for slot in _lucky_missing_slots(slots):
+        status_line = __language__(33259) % (slot['label'])
+        _step(58, status_line)
+        downloaded = _attempt_download_for_slot(
+          slot,
+          required_tiers=['exact', 'likely'],
+          fallback_to_top=False,
+          percent=62,
+          status_label=status_line,
+          delay_seconds=download_request_delay_seconds
+        )
+        download_request_delay_seconds = 1.15
+        if downloaded:
+          _step(66, __language__(33242) % (slot['label']))
+
+    can_use_reference_for_sync = english_reference_tier in ['exact', 'likely']
+    should_test_english_reference = False
+    if english_reference_path and _is_lucky_prompt_english_test_enabled():
+      try:
+        prompt_message = '%s[CR][CR]%s' % (__language__(33249), __language__(33250))
+        should_test_english_reference = __msg_box__.yesno(__language__(33230), prompt_message)
+      except Exception:
+        should_test_english_reference = False
+
+    if should_test_english_reference and english_reference_path and can_use_reference_for_sync:
+      _close_progress(progress)
+      progress = None
+      preview_result = _run_lucky_english_sync_preview(english_reference_path)
+      if preview_result.get('started'):
+        _focus_video_for_lucky_preview(preview_result.get('state'))
+        _log('lucky english preview started: reference=%s' % (english_reference_path), LOG_INFO)
+        preview_selection = 'cancel'
+        try:
+          preview_selection = _show_lucky_english_preview_dialog(english_reference_path)
+        finally:
+          try:
+            _restore_lucky_preview_state(preview_result.get('state'))
+            _log('lucky english preview restore complete', LOG_INFO)
+          except Exception:
+            pass
+
+        if preview_selection == 'cancel':
+          raise RuntimeError(lucky_cancel_token)
+
+        if preview_selection == 'sync':
+          english_preview_confirmed_sync = True
+        else:
+          rejected_english_reference_path = english_reference_path
+          english_reference_path = ''
+          english_reference_tier = ''
+          can_use_reference_for_sync = False
+          _log('lucky english reference rejected by user after preview', LOG_INFO)
+          _notify(__language__(33270), NOTIFY_WARNING, timeout=4000)
+      progress = _create_lucky_progress()
+      _step(68, __language__(33264))
+
+    if _is_lucky_smartsync_enabled() and english_reference_path and can_use_reference_for_sync:
+      for slot in slots:
+        slot_path = slot.get('path')
+        if not slot_path:
+          continue
+        if slot_path.lower() == english_reference_path.lower():
+          continue
+        _step(72, __language__(33262) % (slot['label']))
+        force_sync_apply = bool(english_preview_confirmed_sync and _as_text(slot.get('origin', '')).lower().startswith('download_'))
+        sync_apply = _run_lucky_smartsync_to_reference(english_reference_path, slot_path, force_apply=force_sync_apply)
+        if not sync_apply.get('applied'):
+          continue
+        slot['path'] = sync_apply.get('path') or slot_path
+        slot['origin'] = 'smartsync'
+        for temp_path in sync_apply.get('temp_paths', []):
+          smart_sync_temp_files.append(temp_path)
+
+    if len(_lucky_missing_slots(slots)) > 0 and _is_lucky_ai_translate_enabled():
+      def _translation_progress(message):
+        _step(84, __language__(33260), message)
+
+      _run_lucky_translate_missing_slots(
+        slots,
+        video_dir,
+        video_basename,
+        english_reference_path,
+        exclude_source_paths=[rejected_english_reference_path] if rejected_english_reference_path else None,
+        require_english_source=True,
+        notify=False,
+        progress_callback=_translation_progress
+      )
+
+    if len(_lucky_missing_slots(slots)) > 0 and _is_lucky_download_enabled():
+      _step(88, __language__(33260))
+      _close_progress(progress)
+      progress = None
+
+      for slot in _lucky_missing_slots(slots):
+        unknown_candidates = _collect_lucky_unknown_candidates(
+          video_dir,
+          video_basename,
+          slot.get('code', ''),
+          max_candidates=3
+        )
+        _log(
+          'lucky dual unknown fallback candidates: language=%s count=%d'
+          % (slot.get('code', ''), len(unknown_candidates)),
+          LOG_INFO
+        )
+        if len(unknown_candidates) == 0:
+          _notify(__language__(33301) % (slot['label']), NOTIFY_WARNING, timeout=4500)
+          continue
+
+        risky_candidate = _prompt_lucky_unknown_candidate(slot.get('label', slot.get('code', '')), unknown_candidates)
+        if not risky_candidate:
+          _log('lucky user skipped risky candidates for %s' % (slot.get('code', 'target')), LOG_WARNING)
+          _notify(__language__(33303) % (slot['label']), NOTIFY_WARNING, timeout=3500)
+          continue
+
+        risky_path = _download_lucky_selected_candidate(video_dir, video_basename, slot, risky_candidate)
+        if not risky_path:
+          _notify(__language__(33301) % (slot['label']), NOTIFY_WARNING, timeout=4500)
+          continue
+
+        slot['path'] = risky_path
+        slot['origin'] = 'download_unknown_user'
+        _log(
+          'lucky user-selected risky candidate: language=%s provider=%s release=%s reason=%s'
+          % (
+            slot.get('code', ''),
+            _as_text(risky_candidate.get('provider', 'provider')),
+            _as_text(risky_candidate.get('release_name', 'subtitle')),
+            _as_text(risky_candidate.get('risk_reason', __language__(33284)))
+          ),
+          LOG_WARNING
+        )
+        _notify(__language__(33302) % (slot['label']), NOTIFY_INFO, timeout=3500)
+
+        if _is_lucky_smartsync_enabled() and english_reference_path and can_use_reference_for_sync and risky_path.lower() != english_reference_path.lower():
+          sync_apply = _run_lucky_smartsync_to_reference(english_reference_path, risky_path, force_apply=True)
+          if not sync_apply.get('applied'):
+            continue
+          slot['path'] = sync_apply.get('path') or risky_path
+          slot['origin'] = 'smartsync'
+          for temp_path in sync_apply.get('temp_paths', []):
+            smart_sync_temp_files.append(temp_path)
+
+      progress = _create_lucky_progress()
+      _step(90, __language__(33265))
+
+    _step(94, __language__(33265))
+    subtitle1 = slots[0].get('path')
+    subtitle2 = slots[1].get('path')
+
+    if not subtitle1 or not subtitle2:
+      missing_labels = []
+      if not subtitle1:
+        missing_labels.append(slots[0].get('label', slots[0].get('code', '')))
+      if not subtitle2:
+        missing_labels.append(slots[1].get('label', slots[1].get('code', '')))
+      missing_text = ', '.join([label for label in missing_labels if label]).strip()
+      if not missing_text:
+        missing_text = 'unknown'
+      _log('i feel lucky strict mode stop: missing=%s' % (missing_text), LOG_WARNING)
+      _notify(__language__(33267) % (missing_text), NOTIFY_WARNING)
+      _close_progress(progress)
+      progress = None
+      _offer_lucky_recovery_actions(missing_text)
+      _cleanup_lucky_temp_sync_files(smart_sync_temp_files)
+      return
+
+    _step(100, __language__(33266))
+    subtitle1_dir = os.path.dirname(subtitle1) if subtitle1 else video_dir
+    finalized = _finalize_selected_subtitle_paths(
+      subtitle1,
+      subtitle2,
+      subtitle1_dir=subtitle1_dir,
+      smart_sync_temp_files=smart_sync_temp_files
+    )
+
+    if finalized:
+      _notify(__language__(33238), NOTIFY_INFO)
+    else:
+      _cleanup_lucky_temp_sync_files(smart_sync_temp_files)
+      _notify(__language__(33241), NOTIFY_WARNING)
+  except RuntimeError as exc:
+    if _as_text(exc) == lucky_cancel_token:
+      _cleanup_lucky_temp_sync_files(smart_sync_temp_files)
+      _notify(__language__(33256), NOTIFY_WARNING)
+      return
+    _cleanup_lucky_temp_sync_files(smart_sync_temp_files)
+    _log('i feel lucky runtime error: %s' % (exc), LOG_WARNING)
+    _notify(__language__(33241), NOTIFY_WARNING)
+  except Exception as exc:
+    _cleanup_lucky_temp_sync_files(smart_sync_temp_files)
+    _log('i feel lucky unexpected error: %s' % (exc), LOG_ERROR)
+    _notify(__language__(33241), NOTIFY_WARNING)
+  finally:
+    _close_progress(progress)
+
 def _run_dual_subtitle_flow():
   video_dir, video_basename = _current_video_context()
   _cleanup_generated_movie_sidecars(video_dir, video_basename)
@@ -3782,35 +5727,12 @@ def _run_dual_subtitle_flow():
   if subtitle1 is None:
     return
 
-  if not subtitle1_dir:
-    subtitle1_dir = os.path.dirname(subtitle1)
-  _remember_last_used_dir(subtitle1_dir)
-  _log('selected subtitles before merge: subtitle1=%s subtitle2=%s' % (subtitle1, subtitle2), LOG_INFO)
-
-  subs = [subtitle1]
-  if subtitle2 is not None:
-    subs.append(subtitle2)
-
-  try:
-    finalfile = _prepare_and_merge_subtitles(subs)
-  except Exception as exc:
-    _log('subtitle merge failed: %s' % (exc), LOG_ERROR)
-    _notify(__language__(33042), NOTIFY_ERROR)
-    __msg_box__.ok(__language__(32531), str(exc))
-    return
-  finally:
-    for temp_sync_path in smart_sync_temp_files:
-      try:
-        if temp_sync_path and temp_sync_path.startswith(__temp__):
-          xbmcvfs.delete(temp_sync_path)
-      except:
-        pass
-
-  Download(finalfile)
-  if len(subs) > 1:
-    _notify(__language__(33041), NOTIFY_INFO)
-  else:
-    _notify(__language__(33045), NOTIFY_INFO)
+  _finalize_selected_subtitle_paths(
+    subtitle1,
+    subtitle2,
+    subtitle1_dir=subtitle1_dir,
+    smart_sync_temp_files=smart_sync_temp_files
+  )
 
 action = params.get('action', 'search')
 
@@ -3825,6 +5747,12 @@ elif action == 'browsedual':
 
 elif action == 'downloadmanual':
   _run_manual_download_action()
+
+elif action == 'ifeelluckysingle':
+  _run_i_feel_lucky_single_flow()
+
+elif action == 'ifeelluckydual' or action == 'ifeellucky':
+  _run_i_feel_lucky_flow()
 
 elif action == 'downloadpick':
   _run_manual_download_pick_action()
