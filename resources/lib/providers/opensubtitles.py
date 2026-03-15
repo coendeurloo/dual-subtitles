@@ -3,6 +3,7 @@
 import gzip
 import io
 import json
+import time
 import zipfile
 
 from .base import SubtitleProviderBase, ProviderAuthError, ProviderRequestError
@@ -32,6 +33,7 @@ class OpenSubtitlesProvider(SubtitleProviderBase):
     self.user_agent = (config.get('user_agent') or 'DualSubtitles')
     self.timeout_seconds = int(config.get('timeout_seconds') or 45)
     self._token = ''
+    self._base_url = self.api_root
     self._log = logger
 
   def _safe_log(self, message):
@@ -56,59 +58,119 @@ class OpenSubtitlesProvider(SubtitleProviderBase):
     headers = {
       'Api-Key': self.api_key,
       'User-Agent': self.user_agent,
+      'Accept': 'application/json',
       'Content-Type': 'application/json',
     }
     if token:
       headers['Authorization'] = 'Bearer %s' % (token)
     return headers
 
-  def _request_json(self, method, path, payload=None, token='', query_params=None):
-    url = '%s%s' % (self.api_root, path)
+  def _build_url(self, path, query_params=None):
+    base_url = (self._base_url or self.api_root or '').rstrip('/')
+    target_path = (path or '').strip()
+    if target_path.startswith('http://') or target_path.startswith('https://'):
+      url = target_path
+    else:
+      if not target_path.startswith('/'):
+        target_path = '/%s' % (target_path)
+      url = '%s%s' % (base_url, target_path)
     if query_params:
       url = '%s?%s' % (url, urlencode(query_params))
+    return url
 
-    request_data = None
-    if payload is not None:
-      request_data = json.dumps(payload).encode('utf-8')
-    request = Request(url, data=request_data)
-    request.get_method = lambda: method
-
-    for header_key, header_value in self._headers(token).items():
-      request.add_header(header_key, header_value)
-
+  def _is_retryable_status(self, status_code):
     try:
-      response = urlopen(request, timeout=self.timeout_seconds)
-      body = response.read()
-    except HTTPError as exc:
-      body = ''
+      status_code = int(status_code)
+    except Exception:
+      return False
+    return status_code in [429, 500, 502, 503, 504]
+
+  def _retry_sleep(self, attempt_index):
+    delay = min(2.5, 0.45 * max(1, int(attempt_index)))
+    try:
+      time.sleep(delay)
+    except Exception:
+      pass
+
+  def _request_json(self, method, path, payload=None, token='', query_params=None):
+    url = self._build_url(path, query_params=query_params)
+    attempt = 0
+    while True:
+      attempt += 1
+      request_data = None
+      if payload is not None:
+        request_data = json.dumps(payload).encode('utf-8')
+      request = Request(url, data=request_data)
+      request.get_method = lambda: method
+
+      for header_key, header_value in self._headers(token).items():
+        request.add_header(header_key, header_value)
+
       try:
-        body = exc.read().decode('utf-8', 'replace')
-      except Exception:
-        pass
-      lowered_body = body.lower()
-      if int(getattr(exc, 'code', 0)) in [401, 403]:
-        raise ProviderAuthError('OpenSubtitles authentication failed (%s).' % (getattr(exc, 'code', 'unknown')))
-      if int(getattr(exc, 'code', 0)) == 400 and ('invalid username' in lowered_body or 'invalid username/password' in lowered_body):
-        raise ProviderAuthError('OpenSubtitles authentication failed (%s).' % (getattr(exc, 'code', 'unknown')))
-      raise ProviderRequestError('OpenSubtitles request failed (%s): %s' % (getattr(exc, 'code', 'unknown'), body[:180]))
-    except URLError as exc:
-      raise ProviderRequestError('OpenSubtitles network error: %s' % (exc))
-    except Exception as exc:
-      raise ProviderRequestError('OpenSubtitles request error: %s' % (exc))
-
-    try:
-      return json.loads(body.decode('utf-8', 'replace'))
-    except Exception as exc:
-      raise ProviderRequestError('OpenSubtitles invalid JSON response: %s' % (exc))
+        response = urlopen(request, timeout=self.timeout_seconds)
+        body = response.read()
+        return json.loads(body.decode('utf-8', 'replace'))
+      except HTTPError as exc:
+        body = ''
+        try:
+          body = exc.read().decode('utf-8', 'replace')
+        except Exception:
+          pass
+        status_code = int(getattr(exc, 'code', 0) or 0)
+        lowered_body = body.lower()
+        if status_code in [401, 403]:
+          raise ProviderAuthError('OpenSubtitles authentication failed (%s).' % (getattr(exc, 'code', 'unknown')))
+        if status_code == 400 and ('invalid username' in lowered_body or 'invalid username/password' in lowered_body):
+          raise ProviderAuthError('OpenSubtitles authentication failed (%s).' % (getattr(exc, 'code', 'unknown')))
+        if self._is_retryable_status(status_code) and attempt < 4:
+          self._safe_log('retrying json request after HTTP %s for %s %s (attempt %d)' % (status_code, method, path, attempt))
+          self._retry_sleep(attempt)
+          continue
+        raise ProviderRequestError('OpenSubtitles request failed (%s): %s' % (getattr(exc, 'code', 'unknown'), body[:180]))
+      except URLError as exc:
+        if attempt < 4:
+          self._safe_log('retrying json request after network error for %s %s (attempt %d): %s' % (method, path, attempt, exc))
+          self._retry_sleep(attempt)
+          continue
+        raise ProviderRequestError('OpenSubtitles network error: %s' % (exc))
+      except ValueError as exc:
+        raise ProviderRequestError('OpenSubtitles invalid JSON response: %s' % (exc))
+      except Exception as exc:
+        if attempt < 3:
+          self._safe_log('retrying json request after unexpected error for %s %s (attempt %d): %s' % (method, path, attempt, exc))
+          self._retry_sleep(attempt)
+          continue
+        raise ProviderRequestError('OpenSubtitles request error: %s' % (exc))
 
   def _request_binary(self, link):
-    request = Request(link)
-    request.add_header('User-Agent', self.user_agent)
-    try:
-      response = urlopen(request, timeout=self.timeout_seconds)
-      return response.read()
-    except Exception as exc:
-      raise ProviderRequestError('OpenSubtitles download request failed: %s' % (exc))
+    attempt = 0
+    while True:
+      attempt += 1
+      request = Request(link)
+      request.add_header('User-Agent', self.user_agent)
+      request.add_header('Accept', '*/*')
+      try:
+        response = urlopen(request, timeout=self.timeout_seconds)
+        return response.read()
+      except HTTPError as exc:
+        status_code = int(getattr(exc, 'code', 0) or 0)
+        if self._is_retryable_status(status_code) and attempt < 4:
+          self._safe_log('retrying binary download after HTTP %s (attempt %d)' % (status_code, attempt))
+          self._retry_sleep(attempt)
+          continue
+        raise ProviderRequestError('OpenSubtitles download request failed (%s).' % (getattr(exc, 'code', 'unknown')))
+      except URLError as exc:
+        if attempt < 4:
+          self._safe_log('retrying binary download after network error (attempt %d): %s' % (attempt, exc))
+          self._retry_sleep(attempt)
+          continue
+        raise ProviderRequestError('OpenSubtitles download request failed: %s' % (exc))
+      except Exception as exc:
+        if attempt < 3:
+          self._safe_log('retrying binary download after unexpected error (attempt %d): %s' % (attempt, exc))
+          self._retry_sleep(attempt)
+          continue
+        raise ProviderRequestError('OpenSubtitles download request failed: %s' % (exc))
 
   def _login(self):
     if self._token:
@@ -128,6 +190,11 @@ class OpenSubtitlesProvider(SubtitleProviderBase):
     token = payload.get('token')
     if not token:
       raise ProviderAuthError('OpenSubtitles login did not return a token.')
+    base_url = (payload.get('base_url') or '').strip()
+    if base_url:
+      if not base_url.startswith('http://') and not base_url.startswith('https://'):
+        base_url = 'https://%s' % (base_url.lstrip('/'))
+      self._base_url = '%s/api/v1' % (base_url.rstrip('/'))
     self._token = token
     return self._token
 
@@ -204,7 +271,6 @@ class OpenSubtitlesProvider(SubtitleProviderBase):
       '/download',
       payload={
         'file_id': int(file_id),
-        'sub_format': 'srt',
       },
       token=token,
       query_params=None
@@ -212,6 +278,9 @@ class OpenSubtitlesProvider(SubtitleProviderBase):
 
     link = payload.get('link')
     if not link:
+      remaining = payload.get('remaining')
+      if remaining == 0:
+        raise ProviderRequestError('OpenSubtitles download limit reached.')
       raise ProviderRequestError('Download link missing in provider response.')
 
     raw_data = self._request_binary(link)
