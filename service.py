@@ -74,6 +74,10 @@ LOG_WARNING = getattr(xbmc, 'LOGWARNING', 2)
 LOG_ERROR = getattr(xbmc, 'LOGERROR', 4)
 OPENAI_CHAT_ENDPOINT = 'https://api.openai.com/v1/chat/completions'
 DOWNLOAD_TIMEOUT_SECONDS = 45
+# Keep AI translation stable by using fixed request sizing/timeouts.
+# These are intentionally not user-configurable in addon settings.
+OPENAI_TRANSLATION_BATCH_SIZE = 20
+OPENAI_REQUEST_TIMEOUT_SECONDS = 180
 FENCED_JSON_REGEX = re.compile(r'^```(?:json)?\s*(.*?)\s*```$', re.DOTALL)
 KNOWN_SUBTITLE_LANGUAGE_CODES = set([
   'af', 'sq', 'ar', 'hy', 'az', 'eu', 'be', 'bn', 'bs', 'bg', 'ca', 'zh', 'hr', 'cs', 'da',
@@ -815,10 +819,10 @@ def _get_openai_model():
   return model.strip()
 
 def _get_translation_batch_size():
-  return _get_int_setting('translation_batch_size', 25, 5, 100)
+  return OPENAI_TRANSLATION_BATCH_SIZE
 
 def _get_translation_timeout_seconds():
-  return _get_int_setting('openai_timeout_seconds', 60, 15, 300)
+  return OPENAI_REQUEST_TIMEOUT_SECONDS
 
 def _progress_update(progress, percent, line1='', line2=''):
   if progress is None:
